@@ -115,6 +115,9 @@ spec:
             - {name: WIREGUARD_IMPLEMENTATION, value: kernelspace}
             - {name: FIREWALL_INPUT_PORTS, value: "1194"}
             - {name: HTTP_CONTROL_SERVER_ADDRESS, value: "127.0.0.1:8000"}
+            # Clients use their own split resolver; avoid the gateway's blocklist startup peak.
+            - {name: BLOCK_MALICIOUS, value: "off"}
+            - {name: DNS_UPDATE_PERIOD, value: "0"}
           securityContext:
             privileged: false
             runAsUser: 0

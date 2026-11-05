@@ -107,15 +107,16 @@ func checkUnderlay() error {
 	if err != nil {
 		return err
 	}
-	if len(interfaces) != 2 {
-		return fmt.Errorf("expected only lo and eth0 before tunnel setup")
-	}
 	for _, iface := range interfaces {
-		if iface.Name != "lo" && iface.Name != "eth0" {
-			return fmt.Errorf("unexpected interface before tunnel setup: %s", iface.Name)
+		if iface.Name == "vpnlink" || iface.Name == "tun0" {
+			return fmt.Errorf("reserved tunnel interface already exists: %s", iface.Name)
+		}
+		if iface.Flags&net.FlagUp != 0 && iface.Name != "lo" && iface.Name != "eth0" {
+			return fmt.Errorf("unexpected active interface before tunnel setup: %s", iface.Name)
 		}
 	}
-	return nil
+	_, err = net.InterfaceByName("eth0")
+	return err
 }
 
 func GatewayGuard() error {

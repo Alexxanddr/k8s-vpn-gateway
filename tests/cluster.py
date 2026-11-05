@@ -68,7 +68,7 @@ def pod(name, selected=True):
         "apiVersion": "v1", "kind": "Pod",
         "metadata": {"name": name, "namespace": NS,
                      "annotations": {"pass-to-vpn": "true"} if selected else {}},
-        "spec": {"automountServiceAccountToken": False,
+        "spec": {"automountServiceAccountToken": False, "terminationGracePeriodSeconds": 3,
                  "containers": [{"name": "app", "image": TOOLS,
                                  "command": ["sleep", "86400"], "securityContext": security,
                                  "resources": {"requests": {"cpu": "5m", "memory": "16Mi"},
@@ -139,8 +139,7 @@ env = {v["name"]: v.get("value", "") for v in config["spec"]["template"]["spec"]
 cluster_dns = env["CLUSTER_DNS"]
 gateway_ip = obj("-n", GW, "get", "service", "vpn-gateway")["spec"]["clusterIP"]
 
-for name in ["vpn-selected", "vpn-ordinary", "vpn-init", "vpn-inherited"]:
-    k("-n", NS, "delete", "pod", name, "--ignore-not-found", "--wait=true")
+k("-n", NS, "delete", "pod", "vpn-selected", "vpn-ordinary", "vpn-init", "--ignore-not-found", "--wait=true")
 apply(pod("vpn-selected"))
 apply(pod("vpn-ordinary", False))
 ready("vpn-selected")

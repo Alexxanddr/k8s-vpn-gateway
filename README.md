@@ -46,7 +46,8 @@ changes to node routing. `/dev/net/tun` is the sole injected host device.
 ## Requirements
 
 - Linux Kubernetes 1.33+ with native sidecars, working nftables and TUN devices. Pods
-  must start with one ordinary `eth0` interface plus loopback.
+  must start with one active ordinary `eth0` interface plus loopback; inactive
+  kernel fallback devices are allowed.
 - cert-manager with its CA injector, already installed.
 - IPv4 Pod/Service networks within private address space, not overlapping
   `198.18.0.0/24`. That fixed subnet is reserved for the overlay (200 clients).
