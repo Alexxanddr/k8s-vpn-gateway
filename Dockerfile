@@ -7,7 +7,7 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags='-s -w -buildid=' -o /gateway ./cmd/gateway
-FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 RUN apk add --no-cache openvpn=2.7.7-r0 nftables=1.1.6-r1 iproute2=7.0.0-r0 ca-certificates=20261020-r0 libcrypto3=3.5.9-r0 libssl3=3.5.9-r0
 COPY --from=build /gateway /usr/local/bin/gateway
 ENTRYPOINT ["gateway"]
