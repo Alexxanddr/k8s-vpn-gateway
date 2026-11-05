@@ -45,7 +45,8 @@ changes to node routing. `/dev/net/tun` is the sole injected host device.
 
 ## Requirements
 
-- Linux Kubernetes 1.33+ with native sidecars, working nftables and TUN devices.
+- Linux Kubernetes 1.33+ with native sidecars, working nftables and TUN devices. Pods
+  must start with one ordinary `eth0` interface plus loopback.
 - cert-manager with its CA injector, already installed.
 - IPv4 Pod/Service networks within private address space, not overlapping
   `198.18.0.0/24`. That fixed subnet is reserved for the overlay (200 clients).
@@ -118,7 +119,8 @@ securityContext:
 
 The application cannot use root, added capabilities (including `NET_RAW` and
 `NET_ADMIN`), privileged mode, shared/host namespaces, user namespaces, hostPath,
-CSI or raw device volumes, host ports or unmasked proc. Use **exec probes**;
+CSI or raw device volumes, host ports, unmasked proc, custom RuntimeClasses,
+resource claims or alternate CNI attachments. Use **exec probes**;
 ordinary inbound connections and replies are blocked in this initial version.
 Ephemeral debug containers must obey the same rules. Existing Deployments are not
 restarted by installing or upgrading this project.

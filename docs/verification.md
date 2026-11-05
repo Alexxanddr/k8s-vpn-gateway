@@ -55,11 +55,15 @@ controller outage and gateway replacement. It observes the ordinary postrouting
 path with nftables counters throughout faults and starts a persistent HTTP client
 that reuses connections across requests. Local evidence is ignored under
 `artifacts/`; inspect it, including connection-reuse markers, before interpreting
-a result. A public diagnostic endpoint is used by default. Set `TEST_URL` to an
-endpoint you control that exposes `ip=SOURCE_ADDRESS` for controlled attribution.
+a result. A public diagnostic endpoint is used by default. For controlled TCP
+and UDP attribution, run `python3 tests/receiver.py --bind LISTEN_IPV4 --port 8080`
+on a separate public lab host you control. Set `TEST_URL=http://LAB_IPV4:8080/`,
+`UDP_ECHO_HOST=LAB_IPV4`, and optionally `UDP_ECHO_PORT=8080`. The HTTP endpoint
+reports `ip=SOURCE_ADDRESS`; the UDP receiver returns its observed source and a
+nonce. Inspect its logs alongside the ordinary-path counters.
 
-For a multi-node test, schedule the gateway with `gatewayNodeSelector` and place
-the test client on another node. The suite reports the actual placements; it must
+For a multi-node test, schedule the gateway with `gatewayNodeSelector` and set
+`CLIENT_NODE` to the hostname label of a different node. The suite reports the actual placements; it must
 not label a single-node run as cross-node proof.
 
 ## Acceptance matrix
@@ -77,8 +81,6 @@ not label a single-node run as cross-node proof.
 | Multi-node | Distinct actual gateway/client node names and successful traffic |
 | Admission conflicts | Dry-run incompatible root/caps/guard tampering rejected; final state validates |
 
-Limits requiring additional lab evidence include arbitrary UDP echo to a
-controlled public receiver, pathological MTUs, provider endpoint blackholing and
-long-lived traffic observation across every failure type, certificate/root
-rotation, upgrade/uninstall behavior and an independently controlled external DNS
-observer. A failed curl alone is never recorded as proof of no bypass.
+The controlled public receiver, cross-node deployment, pathological MTUs,
+certificate/root rotation and an independently controlled external DNS observer
+need separate lab runs. A failed curl alone is never recorded as proof of no bypass.

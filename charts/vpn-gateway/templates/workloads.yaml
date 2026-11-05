@@ -107,6 +107,7 @@ spec:
       containers:
         - name: gluetun
           image: {{ .Values.gluetunImage | quote }}
+          command: [/bin/sh, -e, /iptables/start.sh]
           env:
             - {name: VPN_SERVICE_PROVIDER, value: custom}
             - {name: VPN_TYPE, value: wireguard}

@@ -156,3 +156,18 @@ func TestLegacyReplicaSetOwnerLookup(t *testing.T) {
 		t.Fatal("explicit opt-out did not win")
 	}
 }
+
+func TestUnsafeNetworkAttachments(t *testing.T) {
+	for _, key := range []string{"k8s.v1.cni.cncf.io/networks", "v1.multus-cni.io/default-network"} {
+		p := safePod()
+		p.Annotations[key] = "extra@vpnlink"
+		if _, err := config.Mutate(request("Pod", p)); err == nil {
+			t.Fatalf("accepted %s", key)
+		}
+	}
+	p := safePod()
+	p.Spec.ResourceClaims = []core.PodResourceClaim{{Name: "network-device"}}
+	if _, err := config.Mutate(request("Pod", p)); err == nil {
+		t.Fatal("accepted device claim")
+	}
+}

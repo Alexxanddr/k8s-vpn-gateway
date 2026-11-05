@@ -133,7 +133,15 @@ func appSecurity(s core.PodSpec, containers []core.Container) error {
 	}
 	return nil
 }
-func validate(s core.PodSpec) error {
+func validate(s core.PodSpec, annotations map[string]string) error {
+	for _, key := range []string{"k8s.v1.cni.cncf.io/networks", "v1.multus-cni.io/default-network"} {
+		if _, present := annotations[key]; present {
+			return fmt.Errorf("alternate CNI attachments forbidden")
+		}
+	}
+	if s.RuntimeClassName != nil || len(s.ResourceClaims) != 0 {
+		return fmt.Errorf("custom runtime classes and resource claims forbidden")
+	}
 	if s.HostNetwork || s.HostPID || s.HostIPC || s.ShareProcessNamespace != nil && *s.ShareProcessNamespace {
 		return fmt.Errorf("host/shared namespaces forbidden")
 	}
@@ -196,7 +204,7 @@ func (c Config) Mutate(r *av1.AdmissionRequest) ([]patch, error) {
 			v = tv
 		}
 		if v == "true" {
-			if err := validate(o.Spec.Template.Spec); err != nil {
+			if err := validate(o.Spec.Template.Spec, t); err != nil {
 				return nil, err
 			}
 		}
@@ -282,12 +290,12 @@ func (c Config) Mutate(r *av1.AdmissionRequest) ([]patch, error) {
 		}
 		s.InitContainers = s.InitContainers[1:]
 		s.Volumes = s.Volumes[:len(s.Volumes)-3]
-		return nil, validate(s)
+		return nil, validate(s, a)
 	}
 	if r.Operation != av1.Create || a[Injected] != "" {
 		return nil, fmt.Errorf("missing protection; create a new Pod through admission")
 	}
-	if err := validate(s); err != nil {
+	if err := validate(s, a); err != nil {
 		return nil, err
 	}
 	a[Injected] = "v1"

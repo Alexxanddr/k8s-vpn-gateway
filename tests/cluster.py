@@ -46,6 +46,12 @@ def gw_exec(container, *args, check=True):
     return k("-n", GW, "exec", "deployment/vpn-gateway", "-c", container, "--", *args, check=check)
 
 
+def restart_count(namespace, name, container):
+    status = obj("-n", namespace, "get", "pod", name)["status"]
+    states = status.get("containerStatuses", []) + status.get("initContainerStatuses", [])
+    return next(s["restartCount"] for s in states if s["name"] == container)
+
+
 def ip(text):
     return next(line[3:] for line in text.splitlines() if line.startswith("ip="))
 
@@ -58,7 +64,7 @@ def pod(name, selected=True):
     security = {"runAsUser": 1000, "runAsNonRoot": True,
                 "allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]},
                 "seccompProfile": {"type": "RuntimeDefault"}}
-    return {
+    result = {
         "apiVersion": "v1", "kind": "Pod",
         "metadata": {"name": name, "namespace": NS,
                      "annotations": {"pass-to-vpn": "true"} if selected else {}},
@@ -68,6 +74,9 @@ def pod(name, selected=True):
                                  "resources": {"requests": {"cpu": "5m", "memory": "16Mi"},
                                                "limits": {"memory": "96Mi"}}}]},
     }
+    if os.environ.get("CLIENT_NODE"):
+        result["spec"]["nodeSelector"] = {"kubernetes.io/hostname": os.environ["CLIENT_NODE"]}
+    return result
 
 
 def ready(name):
@@ -188,7 +197,9 @@ gw_exec("overlay", "sh", "-c", "nft -f - <<'RULES'\n" + gateway_observer + "RULE
 assert_no_gateway_bypass()
 assert exec_app("vpn-selected", "dig", "@127.0.0.1", "example.com", "+short", "+tries=1", "+time=4").stdout.strip()
 assert exec_app("vpn-selected", "dig", "@127.0.0.1", "example.com", "+tcp", "+short", "+tries=1", "+time=4").stdout.strip()
-assert "10." in exec_app("vpn-selected", "dig", "@127.0.0.1", "kubernetes.default.svc.cluster.local", "+short").stdout
+cluster_api = obj("-n", "default", "get", "service", "kubernetes")["spec"]["clusterIP"]
+assert cluster_api in exec_app("vpn-selected", "dig", "@127.0.0.1", "kubernetes.default.svc.cluster.local", "+short").stdout.splitlines()
+assert exec_app("vpn-selected", "curl", "-ksS", "--max-time", "2", f"https://{cluster_api}", check=False).returncode != 0
 assert exec_app("vpn-selected", "dig", f"@{cluster_dns}", "example.com", "+short", "+tries=1", "+time=1", check=False).returncode != 0
 assert exec_app("vpn-selected", "curl", "--interface", "eth0", "-fsS", "--max-time", "2", URL, check=False).returncode != 0
 # Give IPv6 a candidate ordinary route, so the IPv6 test exercises a real guard drop.
@@ -196,13 +207,22 @@ guard("vpn-selected", "ip", "-6", "addr", "add", "2001:db8::2/64", "dev", "eth0"
 guard("vpn-selected", "ip", "-6", "route", "add", "default", "dev", "eth0")
 assert exec_app("vpn-selected", "curl", "-g", "-6", "-fsS", "--max-time", "2", "http://[2606:4700:4700::1111]", check=False).returncode != 0
 assert_no_bypass("vpn-selected")
+client_rules = json.loads(guard("vpn-selected", "nft", "-j", "list", "chain", "inet", "vpn_guard", "output").stdout)
+first_rule = [r["rule"] for r in client_rules["nftables"] if "rule" in r][0]
+assert any(e.get("counter", {}).get("packets", 0) > 0 for e in first_rule["expr"]), "IPv6 drop was not exercised"
+if os.environ.get("UDP_ECHO_HOST"):
+    echo = exec_app("vpn-selected", "python3", "-c",
+        "import socket,sys,os; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(5); n=os.urandom(16); s.sendto(n+bytes(16),(sys.argv[1],int(sys.argv[2]))); r,_=s.recvfrom(32); assert r[16:]==n; print(r[:16].decode().strip())",
+        os.environ["UDP_ECHO_HOST"], os.environ.get("UDP_ECHO_PORT", "8080"))
+    assert echo.stdout.strip() == vpn_ip, "UDP receiver observed a different source IP"
+    print("Controlled UDP echo and observed VPN source: PASS", flush=True)
 print("TCP, UDP/TCP DNS, split DNS, direct DNS/interface and IPv6 blocks: PASS", flush=True)
 
 # Keep a real HTTP connection across fault injection; curl reuses connections.
-urls = [URL] * 120
+urls = [URL] * 240
 stream = subprocess.Popen(["env", f"KUBECONFIG={os.environ['KUBECONFIG']}", "kubectl", "-n", NS,
     "exec", "vpn-selected", "-c", "app", "--", "curl", "-sS", "--rate", "1/s", "--max-time", "2",
-    "--write-out", "\nconnection-reuse=%{num_connects}\n", *urls],
+    "--no-buffer", "--write-out", "\nconnection-reuse=%{num_connects}\n", *urls],
     stdout=(ARTIFACTS / "continuous-traffic.log").open("w"), stderr=subprocess.DEVNULL)
 try:
     time.sleep(4)
@@ -225,22 +245,28 @@ try:
         try:
             blocked_window("vpn-selected", 6)
             print("Provider UDP blackhole, ordinary counters zero: PASS", flush=True)
-            gw_exec("overlay", "ip", "link", "set", "tun0", "down")
+            down = gw_exec("overlay", "ip", "link", "set", "tun0", "down", check=False)
+            assert down.returncode == 0 or 'Cannot find device "tun0"' in down.stderr, down.stderr
             blocked_window("vpn-selected", 6)
             print("VPN interface down, ordinary counters zero: PASS", flush=True)
+            gateway_name = obj("-n", GW, "get", "pods", "-l", "app=vpn-gateway")["items"][0]["metadata"]["name"]
+            before = restart_count(GW, gateway_name, "gluetun")
             gw_exec("gluetun", "sh", "-c", "kill -TERM 1", check=False)
             blocked_window("vpn-selected", 8)
+            assert restart_count(GW, gateway_name, "gluetun") > before, "Gluetun did not restart"
             print("Gluetun process termination under provider fault, ordinary counters zero: PASS", flush=True)
         finally:
             gw_exec("overlay", "nft", "delete", "table", "inet", "vpn_fault", check=False)
         assert wait_vpn("vpn-selected") != plain_ip
         # Native sidecar restart must leave the dataplane guard in place.
-        guard("vpn-selected", "sh", "-c", "kill -TERM 1")
+        before = restart_count(NS, "vpn-selected", "vpn-guard")
+        k("-n", NS, "exec", "vpn-selected", "-c", "vpn-guard", "--", "sh", "-c", "kill -TERM 1", check=False)
         for _ in range(20):
             time.sleep(1)
             try:
-                assert_no_bypass("vpn-selected")
-                break
+                if restart_count(NS, "vpn-selected", "vpn-guard") > before:
+                    assert_no_bypass("vpn-selected")
+                    break
             except RuntimeError:
                 continue
         else:

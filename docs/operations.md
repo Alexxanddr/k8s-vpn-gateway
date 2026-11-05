@@ -46,7 +46,11 @@ not proof of VPN availability; inspect Gluetun and the actual egress IP as well.
   PSA events. A missing Secret or failed firewall installation is intentionally fatal.
 - Tunnel up but no replies: inspect `ip rule` in the gateway. Priority 50 must
   select main for `198.18.0.0/24`; main must have `vpnlink` connected. Inspect
-  Gluetun post-rules and the independent SNAT counters.
+  Gluetun post-rules and the independent SNAT counters. The chart launches
+  Gluetun through a short pre-start script that removes an orphaned `tun0` and
+  its policy rules for table 51820 before Gluetun restarts. This addresses the
+  [upstream Kubernetes restart issue](https://github.com/qdm12/gluetun-wiki/blob/main/setup/advanced/kubernetes.md#adding-ipv6-rule--file-exists)
+  without racing Gluetun startup or changing the independent firewall.
 - Gateway replacement: keep its Service. Allow the OpenVPN heartbeat/reconnection
   interval plus CNI/Service convergence. No direct fallback is permitted.
 - DNS: only the local relay can use CoreDNS, and only for `cluster.local`.

@@ -22,7 +22,9 @@ escalation. They cannot use root-owned socket exceptions, alter routes/firewalls
 create raw packets, enter the network sidecar's process namespace, or mount its
 credential volumes. Setuid binaries cannot gain privilege. Validation rejects
 host/shared namespaces, privileged containers, added capabilities, unsafe proc,
-host paths, CSI devices and raw block device access. The trusted TUN host device
+host paths, CSI devices, raw block device access, device claims, alternate CNI
+attachments and custom RuntimeClasses. Startup checks for only `eth0` and `lo`,
+so a pre-existing interface cannot impersonate a project tunnel. The trusted TUN host device
 and NET_ADMIN are limited to injected components.
 
 The gateway has a separate FORWARD guard installed before either tunnel or

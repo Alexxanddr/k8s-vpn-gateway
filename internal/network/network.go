@@ -72,9 +72,9 @@ add chain inet vpn_guard output { type filter hook output priority 10; policy dr
 add rule inet vpn_guard output meta nfproto ipv6 counter drop
 add rule inet vpn_guard output oifname "lo" counter accept
 add rule inet vpn_guard output oifname "vpnlink" counter accept
-add rule inet vpn_guard output meta skuid 0 ip daddr %s udp dport 1194 counter accept
-add rule inet vpn_guard output meta skuid 0 ip daddr %s udp dport 53 counter accept
-add rule inet vpn_guard output meta skuid 0 ip daddr %s tcp dport 53 counter accept
+add rule inet vpn_guard output oifname "eth0" meta skuid 0 ip daddr %s udp dport 1194 counter accept
+add rule inet vpn_guard output oifname "eth0" meta skuid 0 ip daddr %s udp dport 53 counter accept
+add rule inet vpn_guard output oifname "eth0" meta skuid 0 ip daddr %s tcp dport 53 counter accept
 add rule inet vpn_guard output counter drop
 add chain inet vpn_guard forward { type filter hook forward priority 10; policy drop; }
 add chain inet vpn_guard input { type filter hook input priority 10; policy drop; }
@@ -101,7 +101,27 @@ add rule inet vpn_guard postrouting oifname "tun0" ip saddr 198.18.0.0/24 counte
 `
 }
 
+// Reserve the tunnel names for interfaces created by trusted processes.
+func checkUnderlay() error {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return err
+	}
+	if len(interfaces) != 2 {
+		return fmt.Errorf("expected only lo and eth0 before tunnel setup")
+	}
+	for _, iface := range interfaces {
+		if iface.Name != "lo" && iface.Name != "eth0" {
+			return fmt.Errorf("unexpected interface before tunnel setup: %s", iface.Name)
+		}
+	}
+	return nil
+}
+
 func GatewayGuard() error {
+	if err := checkUnderlay(); err != nil {
+		return err
+	}
 	if err := nft(GatewayRules()); err != nil {
 		return err
 	}
@@ -184,6 +204,9 @@ func DNSHandler(cluster, public string) dns.Handler {
 func Client() error {
 	// Remove stale startup state before any potentially failing operation.
 	_ = os.Remove("/run/vpn/ready")
+	if err := checkUnderlay(); err != nil {
+		return err
+	}
 	gateway, err := ipv4("GATEWAY_IP")
 	if err != nil {
 		return err
