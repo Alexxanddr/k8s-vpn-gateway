@@ -1,0 +1,44 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: vpn-bootstrap
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: vpn-root
+spec:
+  isCA: true
+  commonName: vpn-gateway-root
+  secretName: vpn-root
+  duration: 87600h
+  renewBefore: 8760h
+  privateKey: {algorithm: ECDSA, size: 256, rotationPolicy: Always}
+  issuerRef: {name: vpn-bootstrap}
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: vpn-ca
+spec:
+  ca: {secretName: vpn-root}
+{{- range $name, $cn := dict "vpn-admission" "vpn-admission" "vpn-overlay-server" "vpn-gateway" "vpn-overlay-client" "vpn-client" }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $name }}
+spec:
+  secretName: {{ $name }}
+  commonName: {{ $cn }}
+  duration: 2160h
+  renewBefore: 720h
+  privateKey: {algorithm: ECDSA, size: 256, rotationPolicy: Always}
+  usages: [digital signature, key encipherment, {{ if eq $name "vpn-overlay-client" }}client auth{{ else }}server auth{{ end }}]
+  dnsNames:
+    - {{ $cn }}
+    - {{ $cn }}.{{ $.Release.Namespace }}.svc
+  issuerRef: {name: vpn-ca}
+{{- end }}

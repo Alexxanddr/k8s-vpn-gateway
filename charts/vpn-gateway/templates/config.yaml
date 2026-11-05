@@ -1,0 +1,28 @@
+{{- $image := required "image must be set to your built image digest" .Values.image -}}
+{{- $dns := required "clusterDNS must be the cluster DNS IPv4 Service address" .Values.clusterDNS -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vpn-gateway-config
+data:
+  post-rules.txt: |
+    iptables -I FORWARD 1 -i vpnlink -o tun0 -j ACCEPT
+    iptables -I FORWARD 1 -i tun0 -o vpnlink -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vpn-gateway
+spec:
+  selector: {app: vpn-gateway}
+  ports:
+    - {name: overlay, port: 1194, targetPort: 1194, protocol: UDP}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vpn-admission
+spec:
+  selector: {app: vpn-admission}
+  ports:
+    - {name: https, port: 443, targetPort: 8443}

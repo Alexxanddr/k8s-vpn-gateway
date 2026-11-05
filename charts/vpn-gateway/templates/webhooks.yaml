@@ -1,0 +1,48 @@
+{{- range $type := list "Mutating" "Validating" }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: {{ $type }}WebhookConfiguration
+metadata:
+  name: vpn-gateway-{{ lower $type }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ $.Release.Namespace }}/vpn-admission
+    helm.sh/resource-policy: keep
+webhooks:
+  - name: {{ lower $type }}.vpn-gateway.io
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    timeoutSeconds: 5
+    {{- if eq $type "Mutating" }}
+    reinvocationPolicy: IfNeeded
+    {{- end }}
+    clientConfig:
+      service:
+        namespace: {{ $.Release.Namespace }}
+        name: vpn-admission
+        path: /{{ if eq $type "Mutating" }}mutate{{ else }}validate{{ end }}
+    rules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods, pods/ephemeralcontainers]
+        scope: Namespaced
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [deployments]
+        scope: Namespaced
+    matchConditions:
+      - name: selected-or-previously-selected
+        expression: >-
+          (has(object.metadata.annotations) &&
+            object.metadata.annotations.exists(k, k in ['pass-to-vpn', 'vpn-gateway.io/selection', 'vpn-gateway.io/injected'])) ||
+          (oldObject != null && has(oldObject.metadata.annotations) &&
+            oldObject.metadata.annotations.exists(k, k in ['pass-to-vpn', 'vpn-gateway.io/selection', 'vpn-gateway.io/injected'])) ||
+          (object.kind == 'Deployment' &&
+            ((has(object.spec.template.metadata.annotations) &&
+              object.spec.template.metadata.annotations.exists(k, k in ['pass-to-vpn', 'vpn-gateway.io/selection'])) ||
+             (oldObject != null && has(oldObject.spec.template.metadata.annotations) &&
+              oldObject.spec.template.metadata.annotations.exists(k, k in ['pass-to-vpn', 'vpn-gateway.io/selection']))))
+{{- end }}

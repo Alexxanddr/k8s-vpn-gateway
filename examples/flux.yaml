@@ -1,0 +1,30 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: vpn-gateway
+  namespace: flux-system
+spec:
+  interval: 10m
+  url: https://github.com/Alexxanddr/k8s-vpn-gateway
+  ref: {branch: main}
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: vpn-gateway
+  namespace: vpn-gateway
+spec:
+  interval: 10m
+  chart:
+    spec:
+      chart: ./charts/vpn-gateway
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: vpn-gateway
+        namespace: flux-system
+  values:
+    image: ghcr.io/alexxanddr/k8s-vpn-gateway@sha256:REPLACE_WITH_VERIFIED_DIGEST
+    clusterDNS: REPLACE_WITH_CLUSTER_DNS_IPV4
+    vpnSecret: vpn-provider
+    clientNamespaces: [vpn-apps]

@@ -1,0 +1,12 @@
+*.conf
+*.key
+*.pem
+*.p12
+.env*
+local/
+artifacts/
+gateway
+!**/gateway/
+
+__pycache__/
+*.pyc

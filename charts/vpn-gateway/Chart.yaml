@@ -1,0 +1,6 @@
+apiVersion: v2
+name: vpn-gateway
+version: 0.1.0
+appVersion: 0.1.0
+kubeVersion: '>=1.33.0-0'
+description: Shared Gluetun VPN gateway with synchronous admission and a persistent pod firewall

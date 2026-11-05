@@ -1,0 +1,137 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vpn-admission
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: vpn-admission}
+  template:
+    metadata:
+      labels: {app: vpn-admission}
+    spec:
+      serviceAccountName: vpn-admission
+      nodeSelector: {{ .Values.controllerNodeSelector | toJson }}
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: admission
+          image: {{ .Values.image | quote }}
+          args: [admission]
+          env:
+            - {name: CLIENT_IMAGE, value: {{ .Values.image | quote }}}
+            - {name: CLUSTER_DNS, value: {{ .Values.clusterDNS | quote }}}
+            - {name: PUBLIC_DNS, value: {{ .Values.publicDNS | quote }}}
+            - {name: CLIENT_SECRET, value: {{ .Values.clientSecret | quote }}}
+            - {name: CLIENT_NAMESPACES, value: {{ join "," .Values.clientNamespaces | quote }}}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: {fieldPath: metadata.namespace}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          ports: [{name: https, containerPort: 8443}]
+          readinessProbe:
+            httpGet: {path: /healthz, port: https, scheme: HTTPS}
+          livenessProbe:
+            httpGet: {path: /healthz, port: https, scheme: HTTPS}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          volumeMounts:
+            - {name: tls, mountPath: /tls, readOnly: true}
+      volumes:
+        - name: tls
+          secret: {secretName: vpn-admission}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vpn-gateway
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: vpn-gateway}
+  template:
+    metadata:
+      labels: {app: vpn-gateway}
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector: {{ .Values.gatewayNodeSelector | toJson }}
+      securityContext:
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: forward-guard
+          image: {{ .Values.image | quote }}
+          args: [guard]
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL], add: [NET_ADMIN]}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+        - name: overlay
+          image: {{ .Values.image | quote }}
+          args: [overlay]
+          restartPolicy: Always
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL], add: [NET_ADMIN]}
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          volumeMounts:
+            - {name: tun, mountPath: /dev/net/tun}
+            - {name: transport, mountPath: /transport, readOnly: true}
+            - {name: run, mountPath: /run/vpn}
+      containers:
+        - name: gluetun
+          image: {{ .Values.gluetunImage | quote }}
+          env:
+            - {name: VPN_SERVICE_PROVIDER, value: custom}
+            - {name: VPN_TYPE, value: wireguard}
+            - {name: VPN_INTERFACE, value: tun0}
+            - {name: WIREGUARD_IMPLEMENTATION, value: kernelspace}
+            - {name: FIREWALL_INPUT_PORTS, value: "1194"}
+            - {name: HTTP_CONTROL_SERVER_ADDRESS, value: "127.0.0.1:8000"}
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL], add: [NET_ADMIN]}
+          readinessProbe:
+            exec: {command: [/gluetun-entrypoint, healthcheck]}
+            periodSeconds: 5
+          livenessProbe:
+            exec: {command: [/gluetun-entrypoint, healthcheck]}
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - {name: tun, mountPath: /dev/net/tun}
+            - {name: provider, mountPath: /gluetun/wireguard, readOnly: true}
+            - {name: post-rules, mountPath: /iptables, readOnly: true}
+      volumes:
+        - name: tun
+          hostPath: {path: /dev/net/tun, type: CharDevice}
+        - name: transport
+          secret: {secretName: vpn-overlay-server, defaultMode: 256}
+        - name: run
+          emptyDir: {medium: Memory}
+        - name: provider
+          secret:
+            secretName: {{ .Values.vpnSecret }}
+            defaultMode: 256
+            items: [{key: wg0.conf, path: wg0.conf}]
+        - name: post-rules
+          configMap: {name: vpn-gateway-config}

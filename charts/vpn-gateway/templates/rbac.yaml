@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vpn-admission
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vpn-admission
+rules:
+  - apiGroups: [""]
+    resources: [services]
+    resourceNames: [vpn-gateway]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [vpn-overlay-client]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vpn-admission
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: vpn-admission}
+subjects:
+  - {kind: ServiceAccount, name: vpn-admission, namespace: {{ .Release.Namespace }}}
+{{- range .Values.clientNamespaces }}
+{{- if eq . $.Release.Namespace }}{{ fail "clientNamespaces must exclude the infrastructure namespace" }}{{ end }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $.Values.clientSecret }}
+  namespace: {{ . }}
+  annotations:
+    helm.sh/resource-policy: keep
+# The controller populates this pre-created Secret; it cannot create arbitrary Secrets.
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vpn-transport-sync
+  namespace: {{ . }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ $.Values.clientSecret }}]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vpn-transport-sync
+  namespace: {{ . }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: vpn-transport-sync}
+subjects:
+  - {kind: ServiceAccount, name: vpn-admission, namespace: {{ $.Release.Namespace }}}
+{{- end }}
