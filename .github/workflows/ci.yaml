@@ -26,6 +26,7 @@ jobs:
         run: |
           helm lint charts/vpn-gateway --set image=vpn:test --set clusterDNS=10.96.0.10
           helm template vpn charts/vpn-gateway --set image=vpn:test --set clusterDNS=10.96.0.10 --set 'clientNamespaces[0]=example' > /tmp/rendered.yaml
+          helm template vpn charts/vpn-gateway --set image=vpn:test --set clusterDNS=10.96.0.10 --set autoEnroll=true > /tmp/automatic.yaml
           if helm template vpn charts/vpn-gateway --set image=vpn:test --set clusterDNS=10.96.0.10 --set publicDNS=10.96.0.10; then
             echo "Expected identical public and cluster DNS settings to be rejected"
             exit 1

@@ -37,15 +37,16 @@ until this independent guard is preserved and the failure tests pass.
 ## Admission boundary
 
 Both webhooks use failurePolicy Fail and CEL match conditions for selected
-Deployments, selected Pods and previously selected objects. Unannotated unrelated
-workloads outside enrolled namespaces do not call the webhook. New ReplicaSet-owned
-Pods within enrolled namespaces also call it, so owners that predate installation
-can be resolved synchronously. Their admission fails closed if owner lookup is
-unavailable, even for an ultimately unselected Deployment. Direct unselected Pods
-do not call it. The webhook registrations match only the immutable namespace name labels listed
-in `clientNamespaces`; the annotation has no effect outside that explicit scope.
-Do not treat an annotation alone as proof of protection. False selection values still pass through validation when
-explicitly present.
+Deployments, selected Pods and previously selected objects. With automatic
+enrollment, annotated objects are matched across namespaces. The gateway,
+`default`, `flux-system`, and namespaces starting with `kube-` deny automatic
+enrollment. Kubernetes Pod Security still evaluates the injected guard.
+
+Explicitly enrolled namespaces also match new ReplicaSet-owned Pods for legacy
+owner lookup. Those Pod creates fail closed if owner lookup is unavailable.
+Automatic enrollment in other namespaces depends on selection being present in
+the Pod or propagated from a Deployment update. Explicit `"false"` values pass
+through validation. Confirm the guard was injected before relying on protection.
 
 Template annotations override Deployment metadata; direct Pod annotations override
 template-inherited selection. This interface intentionally permits owners to opt
@@ -69,11 +70,21 @@ Transport credentials do not authenticate distinct applications and there is no
 individual-client certificate revocation in this version. Revoking enrollment
 requires removing/replacing the transport credentials and recreating workloads.
 
-Admission can read one source transport client Secret and read/update only the
-named destination Secret in explicitly configured namespaces. It cannot read the
-provider Secret or CA signing Secret. For legacy owner resolution it can also
-get Deployments and ReplicaSets, only in the enrolled namespaces. A namespace operator able to read the client
-transport Secret can join the transport trust domain. Restrict that access.
+Admission reads one source client transport Secret. Static enrollment permits
+read and update of the named destination Secret in configured namespaces.
+Automatic enrollment adds cluster-wide Pod list access and creates the same named
+transport Secret on demand for admitted Pods. It requests Pod metadata and
+filters by the injection marker. A ValidatingAdmissionPolicy restricts Secret
+writes by the admission service account to its transport Secret and prevents
+adopting an existing unrelated Secret. The gateway provider Secret and CA signing
+Secret are outside its read permissions. Legacy Deployment and ReplicaSet reads
+are scoped to explicitly enrolled namespaces.
+
+A namespace operator able to read the client transport Secret can join the shared
+transport trust domain. Automatically created transport Secrets remain when Pods
+are removed. The controller refreshes a namespace's credentials while there are
+selected Pods to serve. During decommissioning, remove those generated Secrets
+and rotate transport credentials as needed.
 Network components are trusted root processes; a vulnerability in OpenVPN, the DNS
 relay or Gluetun can defeat the protection within their own network namespace.
 

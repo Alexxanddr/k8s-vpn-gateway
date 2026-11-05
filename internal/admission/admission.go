@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,6 +29,8 @@ type Config struct {
 	OwnerSelection                                        func(string, meta.OwnerReference) (bool, error)
 	Image, GatewayIP, ClusterDNS, PublicDNS, ClientSecret string
 	Namespaces                                            []string
+	AutoEnroll                                            bool
+	GatewayNamespace                                      string
 }
 
 type object struct {
@@ -179,6 +182,10 @@ func (c Config) dns(namespace string) *core.PodDNSConfig {
 }
 func ptr[T any](v T) *T { return &v }
 
+func (c Config) autoNamespace(namespace string) bool {
+	return c.AutoEnroll && namespace != c.GatewayNamespace && namespace != "default" && namespace != "flux-system" && !strings.HasPrefix(namespace, "kube-")
+}
+
 func (c Config) Mutate(r *av1.AdmissionRequest) ([]patch, error) {
 	var o object
 	if err := json.Unmarshal(r.Object.Raw, &o); err != nil {
@@ -204,6 +211,9 @@ func (c Config) Mutate(r *av1.AdmissionRequest) ([]patch, error) {
 			v = tv
 		}
 		if v == "true" {
+			if c.AutoEnroll && !c.autoNamespace(r.Namespace) && !slices.Contains(c.Namespaces, r.Namespace) {
+				return nil, fmt.Errorf("VPN enrollment is unavailable in this namespace")
+			}
 			if err := validate(o.Spec.Template.Spec, t); err != nil {
 				return nil, err
 			}
@@ -224,13 +234,7 @@ func (c Config) Mutate(r *av1.AdmissionRequest) ([]patch, error) {
 	// Legacy ReplicaSets may predate template propagation. Resolve their owner
 	// synchronously while admitting a new Pod, never after application startup.
 	if r.Operation == av1.Create && a[Annotation] == "" && a[Selection] == "" {
-		enrolled := false
-		for _, ns := range c.Namespaces {
-			if ns == r.Namespace {
-				enrolled = true
-			}
-		}
-		if enrolled {
+		if slices.Contains(c.Namespaces, r.Namespace) {
 			for _, owner := range o.Metadata.OwnerReferences {
 				if owner.Kind == "ReplicaSet" && owner.Controller != nil && *owner.Controller {
 					if c.OwnerSelection == nil {
@@ -264,16 +268,8 @@ func (c Config) Mutate(r *av1.AdmissionRequest) ([]patch, error) {
 			return nil, fmt.Errorf("selection cannot change on an existing Pod; roll out its owner")
 		}
 	}
-	if enabled {
-		allowed := false
-		for _, ns := range c.Namespaces {
-			if ns == r.Namespace {
-				allowed = true
-			}
-		}
-		if !allowed {
-			return nil, fmt.Errorf("namespace is not configured in clientNamespaces")
-		}
+	if enabled && !c.autoNamespace(r.Namespace) && !slices.Contains(c.Namespaces, r.Namespace) {
+		return nil, fmt.Errorf("VPN enrollment is unavailable in this namespace")
 	}
 	if !enabled {
 		if a[Injected] != "" {
@@ -284,6 +280,9 @@ func (c Config) Mutate(r *av1.AdmissionRequest) ([]patch, error) {
 	s := o.Spec.PodSpec
 	hasGuard := len(s.InitContainers) > 0 && s.InitContainers[0].Name == "vpn-guard"
 	if hasGuard {
+		if c.autoNamespace(r.Namespace) && !slices.Contains(c.Namespaces, r.Namespace) && o.Metadata.Labels[Injected] != "v1" {
+			return nil, fmt.Errorf("automatic enrollment label is missing")
+		}
 		// Compare trusted fields rather than trusting the annotation as proof of injection.
 		if a[Injected] != "v1" || !sameContainer(s.InitContainers[0], c.sidecar()) || len(s.Volumes) < 3 || !reflect.DeepEqual(s.Volumes[len(s.Volumes)-3:], c.volumes()) || s.DNSPolicy != core.DNSNone || !reflect.DeepEqual(s.DNSConfig, c.dns(r.Namespace)) {
 			return nil, fmt.Errorf("injected protection was modified")
@@ -299,13 +298,22 @@ func (c Config) Mutate(r *av1.AdmissionRequest) ([]patch, error) {
 		return nil, err
 	}
 	a[Injected] = "v1"
-	return []patch{
+	changes := []patch{
 		{"add", "/metadata/annotations", a},
 		{"add", "/spec/initContainers", append([]core.Container{c.sidecar()}, s.InitContainers...)},
 		{"add", "/spec/volumes", append(s.Volumes, c.volumes()...)},
 		{"add", "/spec/dnsPolicy", core.DNSNone},
 		{"add", "/spec/dnsConfig", c.dns(r.Namespace)},
-	}, nil
+	}
+	if c.autoNamespace(r.Namespace) {
+		labels := o.Metadata.Labels
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels[Injected] = "v1"
+		changes = append(changes, patch{"add", "/metadata/labels", labels})
+	}
+	return changes, nil
 }
 
 // Kubernetes defaults these fields between mutation and validation/reinvocation.
@@ -351,7 +359,7 @@ func serviceIP(namespace, name string) (string, error) {
 }
 
 func Serve() error {
-	c := Config{Image: os.Getenv("CLIENT_IMAGE"), ClusterDNS: os.Getenv("CLUSTER_DNS"), PublicDNS: os.Getenv("PUBLIC_DNS"), ClientSecret: os.Getenv("CLIENT_SECRET"), Namespaces: strings.Split(os.Getenv("CLIENT_NAMESPACES"), ","), OwnerSelection: ownerSelection}
+	c := Config{Image: os.Getenv("CLIENT_IMAGE"), ClusterDNS: os.Getenv("CLUSTER_DNS"), PublicDNS: os.Getenv("PUBLIC_DNS"), ClientSecret: os.Getenv("CLIENT_SECRET"), Namespaces: strings.Split(os.Getenv("CLIENT_NAMESPACES"), ","), OwnerSelection: ownerSelection, AutoEnroll: os.Getenv("AUTO_ENROLL") == "true", GatewayNamespace: os.Getenv("POD_NAMESPACE")}
 	var err error
 	c.GatewayIP, err = serviceIP(os.Getenv("POD_NAMESPACE"), "vpn-gateway")
 	if err != nil {
@@ -363,7 +371,7 @@ func Serve() error {
 			return fmt.Errorf("IPv4 configuration required")
 		}
 	}
-	go syncCertificates(os.Getenv("POD_NAMESPACE"), c.ClientSecret, c.Namespaces)
+	go c.syncCertificates()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", c.Handler)
 	mux.HandleFunc("/validate", func(w http.ResponseWriter, r *http.Request) {

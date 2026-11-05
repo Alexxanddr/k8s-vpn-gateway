@@ -171,3 +171,39 @@ func TestUnsafeNetworkAttachments(t *testing.T) {
 		t.Fatal("accepted device claim")
 	}
 }
+
+func TestAutomaticEnrollmentUsesPodNamespace(t *testing.T) {
+	c := config
+	c.AutoEnroll = true
+	c.GatewayNamespace = "vpn-gateway"
+	for _, ns := range []string{"app-one", "app-two"} {
+		r := request("Pod", safePod())
+		r.Namespace = ns
+		r.DryRun = ptr(true)
+		changes, err := c.Mutate(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		labels := changes[len(changes)-1]
+		if labels.Path != "/metadata/labels" || labels.Value.(map[string]string)[Injected] != "v1" {
+			t.Fatalf("selected Pod in %s is not discoverable", ns)
+		}
+		if dns := c.dns(ns); dns.Searches[0] != ns+".svc.cluster.local" {
+			t.Fatalf("wrong DNS search namespace: %v", dns.Searches)
+		}
+	}
+	for _, ns := range []string{"default", "kube-system", "flux-system", "vpn-gateway"} {
+		r := request("Pod", safePod())
+		r.Namespace = ns
+		if _, err := c.Mutate(r); err == nil {
+			t.Fatalf("selected Pod accepted in reserved namespace %s", ns)
+		}
+	}
+	p := safePod()
+	p.Annotations = nil
+	r := request("Pod", p)
+	r.Namespace = "app-one"
+	if changes, err := c.Mutate(r); err != nil || len(changes) != 0 {
+		t.Fatalf("unselected Pod changed: %v %v", changes, err)
+	}
+}

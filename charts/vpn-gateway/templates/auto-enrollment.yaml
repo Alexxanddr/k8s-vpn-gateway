@@ -1,0 +1,62 @@
+{{- if .Values.autoEnroll }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: vpn-gateway-transport-secret
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [secrets]
+        scope: Namespaced
+  matchConditions:
+    - name: gateway-service-account
+      expression: 'request.userInfo.username == "system:serviceaccount:{{ .Release.Namespace }}:vpn-admission"'
+  validations:
+    - expression: >-
+        object.metadata.name == {{ .Values.clientSecret | toJson }} && object.type == 'Opaque' &&
+        ((request.operation == 'UPDATE' && request.namespace in {{ .Values.clientNamespaces | toJson }}) ||
+         (request.namespace != {{ .Release.Namespace | toJson }} &&
+          !(request.namespace in ['default', 'flux-system']) && !request.namespace.startsWith('kube-') &&
+          has(object.metadata.labels) && 'vpn-gateway.io/transport-owner' in object.metadata.labels &&
+          object.metadata.labels['vpn-gateway.io/transport-owner'] == {{ .Release.Namespace | toJson }} &&
+          (request.operation == 'CREATE' ||
+           (has(oldObject.metadata.labels) && 'vpn-gateway.io/transport-owner' in oldObject.metadata.labels &&
+            oldObject.metadata.labels['vpn-gateway.io/transport-owner'] == {{ .Release.Namespace | toJson }}))))
+      message: VPN admission may write only its own client transport Secret
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: vpn-gateway-transport-secret
+spec:
+  policyName: vpn-gateway-transport-secret
+  validationActions: [Deny]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vpn-gateway-auto-enrollment
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ .Values.clientSecret | quote }}]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vpn-gateway-auto-enrollment
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: vpn-gateway-auto-enrollment}
+subjects:
+  - {kind: ServiceAccount, name: vpn-admission, namespace: {{ .Release.Namespace }}}
+{{- end }}

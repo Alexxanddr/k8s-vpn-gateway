@@ -5,6 +5,8 @@ vpnSecret: vpn-provider
 clientSecret: vpn-client-transport
 # Existing application namespaces. These need PSA exemptions for NET_ADMIN and /dev/net/tun.
 clientNamespaces: []
+# Provision transport credentials after a selected Pod is admitted.
+autoEnroll: false
 clusterDNS: ""
 publicDNS: 1.1.1.1
 # Optional scheduling constraints, useful for the multi-node acceptance test.

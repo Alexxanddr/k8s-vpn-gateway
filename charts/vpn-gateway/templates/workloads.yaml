@@ -27,6 +27,7 @@ spec:
             - {name: CLUSTER_DNS, value: {{ .Values.clusterDNS | quote }}}
             - {name: PUBLIC_DNS, value: {{ .Values.publicDNS | quote }}}
             - {name: CLIENT_SECRET, value: {{ .Values.clientSecret | quote }}}
+            - {name: AUTO_ENROLL, value: {{ .Values.autoEnroll | quote }}}
             - {name: CLIENT_NAMESPACES, value: {{ join "," .Values.clientNamespaces | quote }}}
             - name: POD_NAMESPACE
               valueFrom:

@@ -62,10 +62,17 @@ changes to node routing. `/dev/net/tun` is the sole injected host device.
 
 ## Install
 
-Install one release per cluster. Create a dedicated infrastructure namespace and
-explicitly approved application namespaces. Both admission registrations are
-restricted to these namespaces by their built-in name labels. Annotations
-outside enrolled namespaces have no effect. See [namespace examples](examples/namespaces.yaml);
+Install one release per cluster. Create a dedicated infrastructure namespace.
+With `autoEnroll: true`, adding the annotation to a compatible application Pod
+or Deployment is sufficient in any eligible namespace. The controller discovers
+admitted Pods and creates the namespace-local transport Secret. The Pod waits
+for that required volume before startup. Automatic enrollment excludes the
+release namespace, `default`, `flux-system`, and namespaces starting with `kube-`.
+Namespace Pod Security enforcement still applies. A namespace enforcing
+`baseline` or `restricted` rejects the injected guard.
+
+With automatic enrollment off, list approved application namespaces explicitly
+in `clientNamespaces`. Both admission registrations match only those namespaces. See [namespace examples](examples/namespaces.yaml);
 `enforce: privileged` is a namespace PSA allowance, **not** a privileged container.
 Restrict who can create workloads there using ordinary Kubernetes RBAC.
 
@@ -95,8 +102,12 @@ installing into your own cluster. No local overrides are checked in.
 `clusterDNS` is mandatory: inspect your actual DNS Service. `publicDNS` defaults
 to `1.1.1.1` through the VPN. The chart creates a short-lived transport client
 certificate through cert-manager and pre-creates its destination Secret in each
-listed application namespace. Admission syncs only that named Secret; provider
-credentials and the CA private key are never copied to application namespaces.
+listed application namespace. Admission syncs only that named Secret. Automatic enrollment gives the
+controller permission to list Pods and manage the transport Secret. A Kubernetes
+ValidatingAdmissionPolicy limits writes by its service account to the reserved
+transport Secret name. Application namespaces receive the overlay client
+certificate and key. Provider credentials and the CA private key stay in the
+gateway namespace.
 Do not set the infrastructure namespace as a client namespace.
 
 For GitOps, [Flux example](examples/flux.yaml) uses the same chart from Git.
@@ -135,7 +146,7 @@ Selection values are exactly the strings `"true"` and `"false"`:
    template annotation `vpn-gateway.io/selection`. Kubernetes copies it through
    ReplicaSets to new Pods; Pod admission injects protection before scheduling.
 
-For ReplicaSets created before installation, new Pods in enrolled namespaces
+For ReplicaSets created before installation, new Pods in explicitly enrolled namespaces
 resolve their ReplicaSet and Deployment owners synchronously during admission.
 Owner lookup failures deny the new Pod. Existing running Pods still require an
 explicit planned rollout. For this legacy lookup, new ReplicaSet-owned Pods in

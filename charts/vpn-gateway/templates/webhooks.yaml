@@ -13,11 +13,13 @@ webhooks:
     sideEffects: None
     failurePolicy: Fail
     matchPolicy: Equivalent
+    {{- if not $.Values.autoEnroll }}
     namespaceSelector:
       matchExpressions:
         - key: kubernetes.io/metadata.name
           operator: In
           values: {{ default (list "") $.Values.clientNamespaces | toJson }}
+    {{- end }}
     timeoutSeconds: 5
     {{- if eq $type "Mutating" }}
     reinvocationPolicy: IfNeeded
