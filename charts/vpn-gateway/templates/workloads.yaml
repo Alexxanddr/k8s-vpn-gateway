@@ -1,6 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  namespace: {{ $.Release.Namespace }}
   name: vpn-admission
 spec:
   replicas: 1
@@ -51,6 +52,7 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  namespace: {{ $.Release.Namespace }}
   name: vpn-gateway
 spec:
   replicas: 1

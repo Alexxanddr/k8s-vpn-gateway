@@ -129,6 +129,13 @@ Selection values are exactly the strings `"true"` and `"false"`:
    template annotation `vpn-gateway.io/selection`. Kubernetes copies it through
    ReplicaSets to new Pods; Pod admission injects protection before scheduling.
 
+For ReplicaSets created before installation, new Pods in enrolled namespaces
+resolve their ReplicaSet and Deployment owners synchronously during admission.
+Owner lookup failures deny the new Pod. Existing running Pods still require an
+explicit planned rollout. For this legacy lookup, new ReplicaSet-owned Pods in
+enrolled namespaces depend on admission even when unselected; direct unselected
+Pods and other namespaces remain unaffected.
+
 Never edit the `vpn-gateway.io/*` annotations or reserved `vpn-*` containers and
 volumes. Validation checks their actual content, not just the marker. Selection
 changes affect **new** Pods. Changing it on an existing Pod is rejected. Removing

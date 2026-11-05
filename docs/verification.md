@@ -27,6 +27,14 @@ fixed it. A subsequent capture run also identified a Docker test harness orderin
 issue: application exec had to wait for the startup marker, just as Kubernetes
 native-sidecar startup probes do. The harness now waits explicitly.
 
+The corrected local real-provider run passed: protected and ordinary egress IPs
+differed, public DNS worked, direct-interface requests failed, Gluetun stop blocked
+egress, gateway stop retained protection, and the continuous ordinary-interface
+egress capture contained **zero bypass packets**. This is Docker evidence, not
+a claim that all Kubernetes failure cases have passed. Go tests and vet passed;
+vulnerability analysis reported no reachable vulnerabilities after updating the
+HTTP/2 dependency. Two non-reachable module advisories remain reported by the tool.
+
 ## Cluster suite
 
 Install the chart in `vpn-gateway-test`, list `vpn-client-test` as its client

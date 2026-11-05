@@ -2,7 +2,6 @@ package admission
 
 import (
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,6 +25,7 @@ const Injected = "vpn-gateway.io/injected"
 
 // Config contains no VPN credentials. Transport credentials stay in pod Secrets.
 type Config struct {
+	OwnerSelection                                        func(string, meta.OwnerReference) (bool, error)
 	Image, GatewayIP, ClusterDNS, PublicDNS, ClientSecret string
 	Namespaces                                            []string
 }
@@ -115,9 +115,11 @@ func appSecurity(s core.PodSpec, containers []core.Container) error {
 				return fmt.Errorf("%s: reserved volume", c.Name)
 			}
 		}
-        for _,probe:=range []*core.Probe{c.StartupProbe,c.ReadinessProbe,c.LivenessProbe}{
-            if probe!=nil && probe.Exec==nil{return fmt.Errorf("%s: protected applications require exec probes",c.Name)}
-        }
+		for _, probe := range []*core.Probe{c.StartupProbe, c.ReadinessProbe, c.LivenessProbe} {
+			if probe != nil && probe.Exec == nil {
+				return fmt.Errorf("%s: protected applications require exec probes", c.Name)
+			}
+		}
 		for _, p := range c.Ports {
 			if p.HostPort != 0 {
 				return fmt.Errorf("host ports forbidden")
@@ -210,6 +212,32 @@ func (c Config) Mutate(r *av1.AdmissionRequest) ([]patch, error) {
 	}
 	if r.Kind.Kind != "Pod" {
 		return nil, fmt.Errorf("unsupported kind")
+	}
+	// Legacy ReplicaSets may predate template propagation. Resolve their owner
+	// synchronously while admitting a new Pod, never after application startup.
+	if r.Operation == av1.Create && a[Annotation] == "" && a[Selection] == "" {
+		enrolled := false
+		for _, ns := range c.Namespaces {
+			if ns == r.Namespace {
+				enrolled = true
+			}
+		}
+		if enrolled {
+			for _, owner := range o.Metadata.OwnerReferences {
+				if owner.Kind == "ReplicaSet" && owner.Controller != nil && *owner.Controller {
+					if c.OwnerSelection == nil {
+						return nil, fmt.Errorf("owner lookup unavailable")
+					}
+					enabled, err := c.OwnerSelection(r.Namespace, owner)
+					if err != nil {
+						return nil, err
+					}
+					if enabled {
+						a[Selection] = "true"
+					}
+				}
+			}
+		}
 	}
 	enabled, err := selected(a)
 	if err != nil {
@@ -308,43 +336,14 @@ func (c Config) Handler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(review)
 }
 
-// The only API read is one named Service; never read workload credentials.
 func serviceIP(namespace, name string) (string, error) {
-	ca, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
-	if err != nil {
-		return "", err
-	}
-	token, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
-	if err != nil {
-		return "", err
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(ca) {
-		return "", fmt.Errorf("invalid API CA")
-	}
-	client := http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}}
-	req, err := http.NewRequest("GET", "https://"+os.Getenv("KUBERNETES_SERVICE_HOST")+":"+os.Getenv("KUBERNETES_SERVICE_PORT")+"/api/v1/namespaces/"+namespace+"/services/"+name, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
-	res, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		return "", fmt.Errorf("gateway Service read returned %d", res.StatusCode)
-	}
 	var svc core.Service
-	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&svc); err != nil {
-		return "", err
-	}
-	return svc.Spec.ClusterIP, nil
+	err := apiRequest("GET", "/api/v1/namespaces/"+namespace+"/services/"+name, nil, &svc)
+	return svc.Spec.ClusterIP, err
 }
 
 func Serve() error {
-	c := Config{Image: os.Getenv("CLIENT_IMAGE"), ClusterDNS: os.Getenv("CLUSTER_DNS"), PublicDNS: os.Getenv("PUBLIC_DNS"), ClientSecret: os.Getenv("CLIENT_SECRET"), Namespaces: strings.Split(os.Getenv("CLIENT_NAMESPACES"), ",")}
+	c := Config{Image: os.Getenv("CLIENT_IMAGE"), ClusterDNS: os.Getenv("CLUSTER_DNS"), PublicDNS: os.Getenv("PUBLIC_DNS"), ClientSecret: os.Getenv("CLIENT_SECRET"), Namespaces: strings.Split(os.Getenv("CLIENT_NAMESPACES"), ","), OwnerSelection: ownerSelection}
 	var err error
 	c.GatewayIP, err = serviceIP(os.Getenv("POD_NAMESPACE"), "vpn-gateway")
 	if err != nil {

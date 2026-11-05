@@ -1,6 +1,7 @@
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
+  namespace: {{ $.Release.Namespace }}
   name: vpn-bootstrap
 spec:
   selfSigned: {}
@@ -8,6 +9,7 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
+  namespace: {{ $.Release.Namespace }}
   name: vpn-root
 spec:
   isCA: true
@@ -21,6 +23,7 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
+  namespace: {{ $.Release.Namespace }}
   name: vpn-ca
 spec:
   ca: {secretName: vpn-root}
@@ -29,6 +32,7 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
+  namespace: {{ $.Release.Namespace }}
   name: {{ $name }}
 spec:
   secretName: {{ $name }}

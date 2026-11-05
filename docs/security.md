@@ -36,7 +36,11 @@ until this independent guard is preserved and the failure tests pass.
 
 Both webhooks use failurePolicy Fail and CEL match conditions for selected
 Deployments, selected Pods and previously selected objects. Unannotated unrelated
-workloads do not call the webhook. There is no namespace opt-out label that can
+workloads outside enrolled namespaces do not call the webhook. New ReplicaSet-owned
+Pods within enrolled namespaces also call it, so owners that predate installation
+can be resolved synchronously. Their admission fails closed if owner lookup is
+unavailable, even for an ultimately unselected Deployment. Direct unselected Pods
+do not call it. There is no namespace opt-out label that can
 silently bypass enforcement. Unknown configured client namespaces are rejected
 at Pod admission. False selection values still pass through validation when
 explicitly present.
@@ -65,7 +69,8 @@ requires removing/replacing the transport credentials and recreating workloads.
 
 Admission can read one source transport client Secret and read/update only the
 named destination Secret in explicitly configured namespaces. It cannot read the
-provider Secret or CA signing Secret. A namespace operator able to read the client
+provider Secret or CA signing Secret. For legacy owner resolution it can also
+get Deployments and ReplicaSets, only in the enrolled namespaces. A namespace operator able to read the client
 transport Secret can join the transport trust domain. Restrict that access.
 Network components are trusted root processes; a vulnerability in OpenVPN, the DNS
 relay or Gluetun can defeat the protection within their own network namespace.

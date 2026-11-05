@@ -2,6 +2,8 @@ package admission
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	av1 "k8s.io/api/admission/v1"
@@ -25,16 +27,25 @@ func inject(t *testing.T, p core.Pod) core.Pod {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range patches {
-		_ = p
+	raw, _ := json.Marshal(p)
+	var o map[string]any
+	_ = json.Unmarshal(raw, &o)
+	for _, patch := range patches {
+		path := strings.Split(strings.TrimPrefix(patch.Path, "/"), "/")
+		target := o
+		for _, key := range path[:len(path)-1] {
+			target = target[key].(map[string]any)
+		}
+		target[path[len(path)-1]] = patch.Value
 	}
-	p.Annotations[Injected] = "v1"
-	p.Spec.InitContainers = append([]core.Container{config.sidecar()}, p.Spec.InitContainers...)
-	p.Spec.Volumes = append(p.Spec.Volumes, config.volumes()...)
-	p.Spec.DNSPolicy = core.DNSNone
-	p.Spec.DNSConfig = config.dns("test")
+	raw, _ = json.Marshal(o)
+	p = core.Pod{}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatal(err)
+	}
 	return p
 }
+
 func TestInjectionBeforeUserInitAndIdempotence(t *testing.T) {
 	p := safePod()
 	p.Spec.InitContainers = append(p.Spec.InitContainers, p.Spec.Containers[0])
@@ -118,5 +129,30 @@ func TestPodUpdateAndTampering(t *testing.T) {
 	p.Spec.EphemeralContainers = []core.EphemeralContainer{{EphemeralContainerCommon: core.EphemeralContainerCommon{Name: "debug", SecurityContext: &core.SecurityContext{RunAsUser: ptr(int64(0))}}}}
 	if _, err := config.Mutate(request("Pod", p)); err == nil {
 		t.Fatal("allowed privileged debugging")
+	}
+}
+
+func TestLegacyReplicaSetOwnerLookup(t *testing.T) {
+	p := safePod()
+	p.Annotations = map[string]string{}
+	p.OwnerReferences = []meta.OwnerReference{{Kind: "ReplicaSet", Name: "old-rs", UID: "rs-uid", Controller: ptr(true)}}
+	c := config
+	called := false
+	c.OwnerSelection = func(namespace string, owner meta.OwnerReference) (bool, error) { called = true; return true, nil }
+	changes, err := c.Mutate(request("Pod", p))
+	if err != nil || !called || len(changes) == 0 {
+		t.Fatalf("legacy lookup: %v", err)
+	}
+	a := changes[0].Value.(map[string]string)
+	if a[Selection] != "true" {
+		t.Fatal(a)
+	}
+	c.OwnerSelection = func(string, meta.OwnerReference) (bool, error) { return false, fmt.Errorf("API unavailable") }
+	if _, err := c.Mutate(request("Pod", p)); err == nil {
+		t.Fatal("owner lookup failed open")
+	}
+	p.Annotations[Annotation] = "false"
+	if changes, err := c.Mutate(request("Pod", p)); err != nil || len(changes) != 0 {
+		t.Fatal("explicit opt-out did not win")
 	}
 }

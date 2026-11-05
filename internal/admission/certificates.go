@@ -17,36 +17,40 @@ import (
 	core "k8s.io/api/core/v1"
 )
 
-func secretRequest(method, namespace, name string, body []byte) (core.Secret, error) {
-	var secret core.Secret
+func apiRequest(method, path string, body []byte, result any) error {
 	ca, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
 	if err != nil {
-		return secret, err
+		return err
 	}
 	token, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
 	if err != nil {
-		return secret, err
+		return err
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(ca) {
-		return secret, fmt.Errorf("invalid API CA")
+		return fmt.Errorf("invalid API CA")
 	}
-	client := http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}}
-	req, err := http.NewRequest(method, "https://"+os.Getenv("KUBERNETES_SERVICE_HOST")+":"+os.Getenv("KUBERNETES_SERVICE_PORT")+"/api/v1/namespaces/"+namespace+"/secrets/"+name, bytes.NewReader(body))
+	client := http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DisableKeepAlives: true, TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}}
+	req, err := http.NewRequest(method, "https://"+os.Getenv("KUBERNETES_SERVICE_HOST")+":"+os.Getenv("KUBERNETES_SERVICE_PORT")+path, bytes.NewReader(body))
 	if err != nil {
-		return secret, err
+		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
 	req.Header.Set("Content-Type", "application/json")
 	res, err := client.Do(req)
 	if err != nil {
-		return secret, err
+		return err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
-		return secret, fmt.Errorf("Secret API returned %d", res.StatusCode)
+		return fmt.Errorf("Kubernetes API returned %d", res.StatusCode)
 	}
-	err = json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&secret)
+	return json.NewDecoder(io.LimitReader(res.Body, 2<<20)).Decode(result)
+}
+
+func secretRequest(method, namespace, name string, body []byte) (core.Secret, error) {
+	var secret core.Secret
+	err := apiRequest(method, "/api/v1/namespaces/"+namespace+"/secrets/"+name, body, &secret)
 	return secret, err
 }
 

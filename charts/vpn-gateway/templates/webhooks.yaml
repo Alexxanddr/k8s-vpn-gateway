@@ -36,6 +36,10 @@ webhooks:
     matchConditions:
       - name: selected-or-previously-selected
         expression: >-
+          (request.operation == 'CREATE' && object.kind == 'Pod' &&
+            object.metadata.namespace in {{ $.Values.clientNamespaces | toJson }} &&
+            has(object.metadata.ownerReferences) &&
+            object.metadata.ownerReferences.exists(o, o.kind == 'ReplicaSet' && has(o.controller) && o.controller)) ||
           (has(object.metadata.annotations) &&
             object.metadata.annotations.exists(k, k in ['pass-to-vpn', 'vpn-gateway.io/selection', 'vpn-gateway.io/injected'])) ||
           (oldObject != null && has(oldObject.metadata.annotations) &&
