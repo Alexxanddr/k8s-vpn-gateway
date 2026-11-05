@@ -16,11 +16,16 @@ ARTIFACTS.mkdir(parents=True, exist_ok=True)
 
 
 def k(*args, data=None, check=True):
-    result = subprocess.run(
-        ["env", f"KUBECONFIG={os.environ['KUBECONFIG']}", "kubectl", *args],
-        input=json.dumps(data) if data is not None else None,
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=65,
-    )
+    for attempt in range(3):
+        result = subprocess.run(
+            ["env", f"KUBECONFIG={os.environ['KUBECONFIG']}", "kubectl", *args],
+            input=json.dumps(data) if data is not None else None,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=65,
+        )
+        if "Unable to connect to the server:" not in result.stderr or "can't assign requested address" not in result.stderr:
+            break
+        # A local dial failure means the request never reached the API server.
+        time.sleep(1)
     if check and result.returncode:
         raise RuntimeError(result.stderr)
     return result
@@ -119,7 +124,7 @@ def assert_no_gateway_bypass():
     text = gw_exec("overlay", "nft", "-j", "list", "table", "inet", "vpn_observe").stdout
     counters = [e["counter"]["packets"] for i in json.loads(text)["nftables"]
                 for e in i.get("rule", {}).get("expr", []) if "counter" in e]
-    assert counters == [0], f"gateway forwarded outside the VPN: {counters}"
+    assert counters == [0, 0, 0], f"gateway forwarded or resolved DNS outside the VPN: {counters}"
     (ARTIFACTS / "gateway-ordinary.json").write_text(text)
 
 
@@ -187,10 +192,12 @@ assert child["metadata"]["ownerReferences"][0]["kind"] == "ReplicaSet"
 print("User init ordering and synchronous Deployment inheritance: PASS", flush=True)
 
 drop_observer("vpn-selected", gateway_ip, cluster_dns)
-gateway_observer = '''add table inet vpn_observe
+gateway_observer = f'''add table inet vpn_observe
 flush table inet vpn_observe
-add chain inet vpn_observe ordinary { type filter hook postrouting priority 300; policy accept; }
+add chain inet vpn_observe ordinary {{ type filter hook postrouting priority 300; policy accept; }}
 add rule inet vpn_observe ordinary iifname "vpnlink" oifname != "tun0" counter
+add rule inet vpn_observe ordinary oifname "eth0" ip daddr {env["PUBLIC_DNS"]} udp dport 53 counter
+add rule inet vpn_observe ordinary oifname "eth0" ip daddr {env["PUBLIC_DNS"]} tcp dport 53 counter
 '''
 gw_exec("overlay", "sh", "-c", "nft -f - <<'RULES'\n" + gateway_observer + "RULES\n")
 assert_no_gateway_bypass()

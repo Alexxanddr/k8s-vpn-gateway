@@ -39,7 +39,9 @@ HTTP/2 dependency. Two non-reachable module advisories remain reported by the to
 
 Install the chart in `vpn-gateway-test`, list `vpn-client-test` as its client
 namespace, and provision the provider Secret separately. Neither namespace should
-contain production workloads. Then run:
+contain production workloads. To cover a pre-existing ReplicaSet, apply
+[`tests/legacy-owner.yaml`](../tests/legacy-owner.yaml) in the client namespace
+before installing the chart; it creates no running application containers. Then run:
 
 ```sh
 export KUBECONFIG=/absolute/private/path/to/test-kubeconfig
@@ -66,6 +68,36 @@ For a multi-node test, schedule the gateway with `gatewayNodeSelector` and set
 `CLIENT_NODE` to the hostname label of a different node. The suite reports the actual placements; it must
 not label a single-node run as cross-node proof.
 
+## Executed on Talos
+
+The single-node Flannel run passed on 2026-11-05 with the published Linux amd64
+runtime image `sha256:76e81e1d5af0a71b228f783b58ad9ee7f6b438523586fbba793c0af02dd43070`
+and the chart's namespace-scoped admission and fixed gateway DNS configuration.
+The [image build](https://github.com/Alexxanddr/k8s-vpn-gateway/actions/runs/42121203592)
+published both amd64 and arm64. Only amd64 was deployed in the cluster.
+
+| Verified on the cluster | Result |
+| --- | --- |
+| Non-privileged TUN and namespace forwarding preflight | Pass; no node routing or sysctl changes |
+| Protected versus ordinary egress | Distinct observed IPv4 addresses |
+| Deployment metadata, direct Pods, legacy ReplicaSets and dry-run | Pass; unrelated namespaces unchanged |
+| User init ordering and incompatible capabilities | Guard was first; user init exercised an actual ordinary-path drop; NET_ADMIN rejected |
+| TCP, public DNS over UDP/TCP, split DNS and internal Service access | TCP and DNS passed; direct CoreDNS, ordinary-interface and internal Service connections blocked |
+| IPv6 | A test route exercised the IPv6 drop counter with zero ordinary bypass |
+| Controller unavailable | Existing client egress continued; new selected admission failed closed; unselected direct Pod dry-run succeeded |
+| Provider UDP blocked, VPN interface down, Gluetun terminated | No ordinary bypass; same-Pod VPN recovery after fault removal |
+| Client network process terminated | Native sidecar restarted; the independent observer recorded no bypass |
+| Gateway deleted and recreated | Egress recovered automatically with a changed gateway Pod IP |
+| Helm uninstall | Both admission registrations stayed fail-closed; existing client had zero bypass and retained only the cluster DNS exception |
+
+Client and gateway postrouting observers recorded zero bypass packets, including
+no ordinary DNS to the configured public resolver from the gateway during the
+observed restart. The continuous HTTP trace included successful responses over
+reused connections, so the observations covered existing connections as well as
+new attempts. These are observations under the tested conditions, not a universal
+claim about every CNI/runtime or protocol. The dedicated test namespaces, their
+provider Secret and the retained test webhooks were removed after verification.
+
 ## Acceptance matrix
 
 | Criterion | Evidence required |
@@ -83,4 +115,5 @@ not label a single-node run as cross-node proof.
 
 The controlled public receiver, cross-node deployment, pathological MTUs,
 certificate/root rotation and an independently controlled external DNS observer
-need separate lab runs. A failed curl alone is never recorded as proof of no bypass.
+need separate lab runs. The controlled TCP/UDP fixture passed its localhost
+self-check; no controlled public receiver was available for this run. A failed curl alone is never recorded as proof of no bypass.

@@ -1,0 +1,26 @@
+# Apply before installing the webhook in a dedicated test client namespace.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legacy-vpn-owner
+  annotations:
+    pass-to-vpn: "true"
+spec:
+  replicas: 0
+  selector:
+    matchLabels: {test: legacy-vpn-owner}
+  template:
+    metadata:
+      labels: {test: legacy-vpn-owner}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: app
+          image: alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+          command: [sleep, "86400"]
+          securityContext:
+            runAsUser: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}

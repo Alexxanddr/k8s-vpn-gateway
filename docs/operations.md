@@ -50,7 +50,10 @@ not proof of VPN availability; inspect Gluetun and the actual egress IP as well.
   Gluetun through a short pre-start script that removes an orphaned `tun0` and
   its policy rules for table 51820 before Gluetun restarts. This addresses the
   [upstream Kubernetes restart issue](https://github.com/qdm12/gluetun-wiki/blob/main/setup/advanced/kubernetes.md#adding-ipv6-rule--file-exists)
-  without racing Gluetun startup or changing the independent firewall.
+  without racing Gluetun startup or changing the independent firewall. The gateway
+  uses a fixed Pod resolver and disables Gluetun's internal DNS forwarder. This
+  avoids a same-Pod restart reusing its previous loopback resolver and forwarding
+  DNS back to itself. Client DNS still uses the separate split resolver.
 - Gateway replacement: keep its Service. Allow the OpenVPN heartbeat/reconnection
   interval plus CNI/Service convergence. No direct fallback is permitted.
 - DNS: only the local relay can use CoreDNS, and only for `cluster.local`.
@@ -97,7 +100,8 @@ network sidecars. An offline or removed controller leaves their rules in place.
 The chart annotates both webhook configurations and copied client Secrets with
 `helm.sh/resource-policy: keep`. A Helm uninstall therefore blocks creation of
 selected workloads while already running clients remain protected (and may lose
-VPN access). Restoring the release restores admission and transport.
+VPN access). Restoring the release restores admission. If the gateway Service
+ClusterIP changes, recreate protected Pods to restore transport.
 
 For deliberate decommission: stop/recreate selected workloads according to their
 owners' rollout policy, explicitly remove selection from their Deployment/Pod

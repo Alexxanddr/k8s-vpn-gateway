@@ -1,5 +1,8 @@
 {{- $image := required "image must be set to your built image digest" .Values.image -}}
 {{- $dns := required "clusterDNS must be the cluster DNS IPv4 Service address" .Values.clusterDNS -}}
+{{- if eq $dns .Values.publicDNS -}}
+{{- fail "publicDNS must differ from clusterDNS to prevent public DNS bypass" -}}
+{{- end -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
