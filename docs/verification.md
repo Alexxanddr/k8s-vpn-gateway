@@ -42,6 +42,7 @@ namespace, and provision the provider Secret separately. Neither namespace shoul
 contain production workloads. Then run:
 
 ```sh
+export KUBECONFIG=/absolute/private/path/to/test-kubeconfig
 TEST_IMAGE=ghcr.io/alexxanddr/k8s-vpn-gateway:test-sha-COMMIT \
   tests/cluster.sh
 RUN_FAULTS=1 TEST_IMAGE=ghcr.io/alexxanddr/k8s-vpn-gateway:test-sha-COMMIT \

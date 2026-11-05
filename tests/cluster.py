@@ -17,7 +17,7 @@ ARTIFACTS.mkdir(parents=True, exist_ok=True)
 
 def k(*args, data=None, check=True):
     result = subprocess.run(
-        ["env", f"KUBECONFIG={Path.home() / '.kube/talos'}", "kubectl", *args],
+        ["env", f"KUBECONFIG={os.environ['KUBECONFIG']}", "kubectl", *args],
         input=json.dumps(data) if data is not None else None,
         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=65,
     )
@@ -40,6 +40,10 @@ def exec_app(name, *args, check=True):
 
 def guard(name, *args):
     return k("-n", NS, "exec", name, "-c", "vpn-guard", "--", *args)
+
+
+def gw_exec(container, *args, check=True):
+    return k("-n", GW, "exec", "deployment/vpn-gateway", "-c", container, "--", *args, check=check)
 
 
 def ip(text):
@@ -102,6 +106,14 @@ def assert_no_bypass(name):
     (ARTIFACTS / f"{name}-guard.txt").write_text(guard(name, "nft", "list", "table", "inet", "vpn_guard").stdout)
 
 
+def assert_no_gateway_bypass():
+    text = gw_exec("overlay", "nft", "-j", "list", "table", "inet", "vpn_observe").stdout
+    counters = [e["counter"]["packets"] for i in json.loads(text)["nftables"]
+                for e in i.get("rule", {}).get("expr", []) if "counter" in e]
+    assert counters == [0], f"gateway forwarded outside the VPN: {counters}"
+    (ARTIFACTS / "gateway-ordinary.json").write_text(text)
+
+
 def blocked_window(name, seconds=12):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -132,10 +144,26 @@ print("Selected and unselected IP behavior: PASS", flush=True)
 # A user init proves the ordinary path is blocked before that init executes.
 p = pod("vpn-init")
 p["spec"]["initContainers"] = [{**p["spec"]["containers"][0], "name": "user-init",
-    "command": ["sh", "-c", 'if curl --interface eth0 -fsS --max-time 2 "$1" >/dev/null 2>&1; then exit 1; fi', "init-test", URL]}]
+    "command": ["sh", "-c", 'if dig @"$1" example.com +tries=1 +time=1 >/dev/null 2>&1; then exit 1; fi; if curl --interface eth0 -fsS --max-time 2 "$2" >/dev/null 2>&1; then exit 1; fi', "init-test", cluster_dns, URL]}]
 apply(p)
 ready("vpn-init")
 assert obj("-n", NS, "get", "pod", "vpn-init")["spec"]["initContainers"][0]["name"] == "vpn-guard"
+init_rules = json.loads(guard("vpn-init", "nft", "-j", "list", "chain", "inet", "vpn_guard", "output").stdout)
+last_rule = [r["rule"] for r in init_rules["nftables"] if "rule" in r][-1]
+assert last_rule["expr"][0]["counter"]["packets"] >= 1, "user init did not exercise the ordinary drop rule"
+
+bad = pod("vpn-bad-capability")
+bad["spec"]["containers"][0]["securityContext"]["capabilities"]["add"] = ["NET_ADMIN"]
+assert k("create", "--dry-run=server", "-f", "-", data=bad, check=False).returncode != 0
+legacy = obj("-n", NS, "get", "replicasets", "-l", "test=legacy-vpn-owner")["items"]
+if legacy:
+    old = legacy[0]["metadata"]
+    old_pod = pod("vpn-legacy-dry", False)
+    old_pod["metadata"]["ownerReferences"] = [{"apiVersion": "apps/v1", "kind": "ReplicaSet",
+        "name": old["name"], "uid": old["uid"], "controller": True}]
+    patched = json.loads(k("create", "--dry-run=server", "-f", "-", "-o", "json", data=old_pod).stdout)
+    assert patched["spec"]["initContainers"][0]["name"] == "vpn-guard"
+    print("Legacy Deployment -> ReplicaSet owner lookup: PASS", flush=True)
 
 # Deployment metadata travels through a real ReplicaSet, with no owner API lookup.
 p = pod("unused")
@@ -151,6 +179,13 @@ assert child["metadata"]["ownerReferences"][0]["kind"] == "ReplicaSet"
 print("User init ordering and synchronous Deployment inheritance: PASS", flush=True)
 
 drop_observer("vpn-selected", gateway_ip, cluster_dns)
+gateway_observer = '''add table inet vpn_observe
+flush table inet vpn_observe
+add chain inet vpn_observe ordinary { type filter hook postrouting priority 300; policy accept; }
+add rule inet vpn_observe ordinary iifname "vpnlink" oifname != "tun0" counter
+'''
+gw_exec("overlay", "sh", "-c", "nft -f - <<'RULES'\n" + gateway_observer + "RULES\n")
+assert_no_gateway_bypass()
 assert exec_app("vpn-selected", "dig", "@127.0.0.1", "example.com", "+short", "+tries=1", "+time=4").stdout.strip()
 assert exec_app("vpn-selected", "dig", "@127.0.0.1", "example.com", "+tcp", "+short", "+tries=1", "+time=4").stdout.strip()
 assert "10." in exec_app("vpn-selected", "dig", "@127.0.0.1", "kubernetes.default.svc.cluster.local", "+short").stdout
@@ -165,7 +200,7 @@ print("TCP, UDP/TCP DNS, split DNS, direct DNS/interface and IPv6 blocks: PASS",
 
 # Keep a real HTTP connection across fault injection; curl reuses connections.
 urls = [URL] * 120
-stream = subprocess.Popen(["env", f"KUBECONFIG={Path.home() / '.kube/talos'}", "kubectl", "-n", NS,
+stream = subprocess.Popen(["env", f"KUBECONFIG={os.environ['KUBECONFIG']}", "kubectl", "-n", NS,
     "exec", "vpn-selected", "-c", "app", "--", "curl", "-sS", "--rate", "1/s", "--max-time", "2",
     "--write-out", "\nconnection-reuse=%{num_connects}\n", *urls],
     stdout=(ARTIFACTS / "continuous-traffic.log").open("w"), stderr=subprocess.DEVNULL)
@@ -184,6 +219,35 @@ try:
         k("-n", GW, "scale", "deployment/vpn-admission", "--replicas=1")
         k("-n", GW, "rollout", "status", "deployment/vpn-admission", "--timeout=60s")
         print("Controller outage and selective fail-closed admission: PASS", flush=True)
+        # Blackhole provider UDP only inside the gateway; overlay replies remain allowed.
+        fault = "add table inet vpn_fault\nadd chain inet vpn_fault output { type filter hook output priority 20; policy accept; }\nadd rule inet vpn_fault output meta l4proto udp udp sport != 1194 counter drop\n"
+        gw_exec("overlay", "sh", "-c", "nft -f - <<'RULES'\n" + fault + "RULES\n")
+        try:
+            blocked_window("vpn-selected", 6)
+            print("Provider UDP blackhole, ordinary counters zero: PASS", flush=True)
+            gw_exec("overlay", "ip", "link", "set", "tun0", "down")
+            blocked_window("vpn-selected", 6)
+            print("VPN interface down, ordinary counters zero: PASS", flush=True)
+            gw_exec("gluetun", "sh", "-c", "kill -TERM 1", check=False)
+            blocked_window("vpn-selected", 8)
+            print("Gluetun process termination under provider fault, ordinary counters zero: PASS", flush=True)
+        finally:
+            gw_exec("overlay", "nft", "delete", "table", "inet", "vpn_fault", check=False)
+        assert wait_vpn("vpn-selected") != plain_ip
+        # Native sidecar restart must leave the dataplane guard in place.
+        guard("vpn-selected", "sh", "-c", "kill -TERM 1")
+        for _ in range(20):
+            time.sleep(1)
+            try:
+                assert_no_bypass("vpn-selected")
+                break
+            except RuntimeError:
+                continue
+        else:
+            raise AssertionError("network sidecar did not restart")
+        assert wait_vpn("vpn-selected") != plain_ip
+        print("Client network process termination/recovery, ordinary counters zero: PASS", flush=True)
+        assert_no_gateway_bypass()
         # Destroy only this test gateway; deletion changes its Pod IP on common CNIs.
         old = obj("-n", GW, "get", "pods", "-l", "app=vpn-gateway")["items"][0]
         k("-n", GW, "scale", "deployment/vpn-gateway", "--replicas=0")
@@ -204,6 +268,10 @@ finally:
     stream.wait(timeout=5)
 
 assert_no_bypass("vpn-selected")
+continuous=(ARTIFACTS / "continuous-traffic.log").read_text()
+assert "connection-reuse=0" in continuous, "no pre-existing HTTP connection was observed"
+observed=[line[3:] for line in continuous.splitlines() if line.startswith("ip=")]
+assert all(value != plain_ip for value in observed), "ordinary source address observed during faults"
 nodes = obj("get", "nodes")["items"]
 client_node = obj("-n", NS, "get", "pod", "vpn-selected")["spec"]["nodeName"]
 gateway_node = obj("-n", GW, "get", "pods", "-l", "app=vpn-gateway")["items"][0]["spec"]["nodeName"]

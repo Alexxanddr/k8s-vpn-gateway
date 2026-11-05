@@ -13,6 +13,11 @@ webhooks:
     sideEffects: None
     failurePolicy: Fail
     matchPolicy: Equivalent
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: {{ default (list "") $.Values.clientNamespaces | toJson }}
     timeoutSeconds: 5
     {{- if eq $type "Mutating" }}
     reinvocationPolicy: IfNeeded

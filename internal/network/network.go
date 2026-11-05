@@ -30,9 +30,9 @@ tls-version-min 1.2
 data-ciphers AES-256-GCM:AES-128-GCM
 ping 5
 ping-restart 20
-persist-key
 persist-tun
 disable-dco
+tmp-dir /run/vpn
 verb 3
 `
 

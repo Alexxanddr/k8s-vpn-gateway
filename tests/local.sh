@@ -25,10 +25,10 @@ iptables -I FORWARD 1 -i vpnlink -o tun0 -j ACCEPT
 iptables -I FORWARD 1 -i tun0 -o vpnlink -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 RULES
 docker network create "$prefix" >/dev/null
-docker run -d --platform "$platform" --name "$prefix-gateway" --network "$prefix" --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_RAW --device /dev/net/tun --sysctl net.ipv4.conf.all.rp_filter=0 --sysctl net.ipv4.conf.default.rp_filter=0 --tmpfs /run/vpn -v "$work/certificates/server:/transport:ro" "$tools" sh -c 'gateway guard && gateway overlay' >/dev/null
+docker run -d --platform "$platform" --name "$prefix-gateway" --read-only --network "$prefix" --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_RAW --device /dev/net/tun --sysctl net.ipv4.conf.all.rp_filter=0 --sysctl net.ipv4.conf.default.rp_filter=0 --tmpfs /run/vpn -v "$work/certificates/server:/transport:ro" "$tools" sh -c 'gateway guard && gateway overlay' >/dev/null
 gateway_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$prefix-gateway")
 docker run -d --platform "$platform" --name "$prefix-gluetun" --network "container:$prefix-gateway" --cap-drop ALL --cap-add NET_ADMIN --device /dev/net/tun -v "$VPN_PROFILE:/gluetun/wireguard/wg0.conf:ro" -v "$work/post:/iptables:ro" -e VPN_SERVICE_PROVIDER=custom -e VPN_TYPE=wireguard -e WIREGUARD_IMPLEMENTATION=kernelspace -e VPN_INTERFACE=tun0 -e FIREWALL_INPUT_PORTS=1194 qmcgaw/gluetun:v3.41.3@sha256:fa19cc76b2af13d57a8d3dc3066f2ada061b1c761b8aecf989b3877c0486e027 >/dev/null
-docker run -d --platform "$platform" --name "$prefix-client" --network "$prefix" --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_BIND_SERVICE --cap-add NET_RAW --device /dev/net/tun --tmpfs /run/vpn -v "$work/certificates/client:/transport:ro" -e GATEWAY_IP="$gateway_ip" -e CLUSTER_DNS=192.0.2.53 -e PUBLIC_DNS=1.1.1.1 "$tools" gateway client >/dev/null
+docker run -d --platform "$platform" --name "$prefix-client" --read-only --network "$prefix" --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_BIND_SERVICE --cap-add NET_RAW --device /dev/net/tun --tmpfs /run/vpn -v "$work/certificates/client:/transport:ro" -e GATEWAY_IP="$gateway_ip" -e CLUSTER_DNS=192.0.2.53 -e PUBLIC_DNS=1.1.1.1 "$tools" gateway client >/dev/null
 docker run -d --platform "$platform" --name "$prefix-plain" --network "$prefix" --cap-drop ALL "$tools" sleep 600 >/dev/null
 printf 'Test containers: %s\n' "$prefix"
 for i in $(seq 1 30); do

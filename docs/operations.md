@@ -7,11 +7,12 @@ The chart never configures another CNI or modifies kubelet/node settings. Exampl
 commands explicitly select the intended kubeconfig:
 
 ```sh
-KUBECONFIG=~/.kube/talos kubectl get nodes -o wide
-KUBECONFIG=~/.kube/talos kubectl get daemonsets -A
-KUBECONFIG=~/.kube/talos kubectl -n kube-system get service kube-dns
-KUBECONFIG=~/.kube/talos kubectl -n kube-system get configmap coredns -o yaml
-KUBECONFIG=~/.kube/talos kubectl get namespaces --show-labels
+export KUBECONFIG=/absolute/private/path/to/kubeconfig
+KUBECONFIG="$KUBECONFIG" kubectl get nodes -o wide
+KUBECONFIG="$KUBECONFIG" kubectl get daemonsets -A
+KUBECONFIG="$KUBECONFIG" kubectl -n kube-system get service kube-dns
+KUBECONFIG="$KUBECONFIG" kubectl -n kube-system get configmap coredns -o yaml
+KUBECONFIG="$KUBECONFIG" kubectl get namespaces --show-labels
 ```
 
 Check TUN availability and network-namespace forwarding in a disposable Pod.
@@ -23,13 +24,13 @@ there unchanged; do not resolve it by granting host access to the controller.
 ## Status and counters
 
 ```sh
-KUBECONFIG=~/.kube/talos kubectl -n vpn-gateway logs deployment/vpn-admission
-KUBECONFIG=~/.kube/talos kubectl -n vpn-gateway logs deployment/vpn-gateway -c gluetun
-KUBECONFIG=~/.kube/talos kubectl -n vpn-gateway logs deployment/vpn-gateway -c overlay
-KUBECONFIG=~/.kube/talos kubectl -n vpn-gateway exec deployment/vpn-gateway -c overlay -- cat /run/vpn/status
-KUBECONFIG=~/.kube/talos kubectl -n vpn-gateway exec deployment/vpn-gateway -c overlay -- nft list table inet vpn_guard
-KUBECONFIG=~/.kube/talos kubectl -n vpn-apps exec POD -c vpn-guard -- nft list table inet vpn_guard
-KUBECONFIG=~/.kube/talos kubectl -n vpn-apps exec POD -c vpn-guard -- ip route
+KUBECONFIG="$KUBECONFIG" kubectl -n vpn-gateway logs deployment/vpn-admission
+KUBECONFIG="$KUBECONFIG" kubectl -n vpn-gateway logs deployment/vpn-gateway -c gluetun
+KUBECONFIG="$KUBECONFIG" kubectl -n vpn-gateway logs deployment/vpn-gateway -c overlay
+KUBECONFIG="$KUBECONFIG" kubectl -n vpn-gateway exec deployment/vpn-gateway -c overlay -- cat /run/vpn/status
+KUBECONFIG="$KUBECONFIG" kubectl -n vpn-gateway exec deployment/vpn-gateway -c overlay -- nft list table inet vpn_guard
+KUBECONFIG="$KUBECONFIG" kubectl -n vpn-apps exec POD -c vpn-guard -- nft list table inet vpn_guard
+KUBECONFIG="$KUBECONFIG" kubectl -n vpn-apps exec POD -c vpn-guard -- ip route
 ```
 
 OpenVPN status contains virtual clients and byte counts, never private keys.

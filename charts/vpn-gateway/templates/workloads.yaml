@@ -72,6 +72,7 @@ spec:
           image: {{ .Values.image | quote }}
           args: [guard]
           securityContext:
+            privileged: false
             runAsUser: 0
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -83,7 +84,15 @@ spec:
           image: {{ .Values.image | quote }}
           args: [overlay]
           restartPolicy: Always
+          startupProbe:
+            exec: {command: [ip, link, show, dev, vpnlink]}
+            periodSeconds: 1
+            failureThreshold: 60
+          readinessProbe:
+            exec: {command: [ip, link, show, dev, vpnlink]}
+            periodSeconds: 5
           securityContext:
+            privileged: false
             runAsUser: 0
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -106,6 +115,7 @@ spec:
             - {name: FIREWALL_INPUT_PORTS, value: "1194"}
             - {name: HTTP_CONTROL_SERVER_ADDRESS, value: "127.0.0.1:8000"}
           securityContext:
+            privileged: false
             runAsUser: 0
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL], add: [NET_ADMIN]}

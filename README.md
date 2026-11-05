@@ -61,7 +61,9 @@ changes to node routing. `/dev/net/tun` is the sole injected host device.
 ## Install
 
 Install one release per cluster. Create a dedicated infrastructure namespace and
-explicitly approved application namespaces. See [namespace examples](examples/namespaces.yaml);
+explicitly approved application namespaces. Both admission registrations are
+restricted to these namespaces by their built-in name labels. Annotations
+outside enrolled namespaces have no effect. See [namespace examples](examples/namespaces.yaml);
 `enforce: privileged` is a namespace PSA allowance, **not** a privileged container.
 Restrict who can create workloads there using ordinary Kubernetes RBAC.
 
@@ -70,18 +72,19 @@ values, Git or a Docker build context. `wg0.conf` must use a literal IPv4 endpoi
 Only the gateway mounts this provider credential.
 
 ```sh
-KUBECONFIG=~/.kube/talos kubectl apply -f examples/namespaces.yaml
-KUBECONFIG=~/.kube/talos kubectl -n vpn-gateway create secret generic vpn-provider \
+export KUBECONFIG=/absolute/private/path/to/kubeconfig
+KUBECONFIG="$KUBECONFIG" kubectl apply -f examples/namespaces.yaml
+KUBECONFIG="$KUBECONFIG" kubectl -n vpn-gateway create secret generic vpn-provider \
   --from-file=wg0.conf=/absolute/private/path/provider.conf
 
 # Replace the image digest with the one produced by the repository CI.
-KUBECONFIG=~/.kube/talos helm upgrade --install vpn-gateway charts/vpn-gateway \
+KUBECONFIG="$KUBECONFIG" helm upgrade --install vpn-gateway charts/vpn-gateway \
   --namespace vpn-gateway --set image=ghcr.io/alexxanddr/k8s-vpn-gateway@sha256:IMAGE_DIGEST \
   --set clusterDNS=CLUSTER_DNS_IPV4 --set 'clientNamespaces[0]=vpn-apps' \
   --wait --timeout 5m
-KUBECONFIG=~/.kube/talos kubectl -n vpn-gateway rollout status deployment/vpn-admission
-KUBECONFIG=~/.kube/talos kubectl -n vpn-gateway rollout status deployment/vpn-gateway
-KUBECONFIG=~/.kube/talos kubectl apply -n vpn-apps -f examples/deployment.yaml
+KUBECONFIG="$KUBECONFIG" kubectl -n vpn-gateway rollout status deployment/vpn-admission
+KUBECONFIG="$KUBECONFIG" kubectl -n vpn-gateway rollout status deployment/vpn-gateway
+KUBECONFIG="$KUBECONFIG" kubectl apply -n vpn-apps -f examples/deployment.yaml
 ```
 
 The kubeconfig in these commands is explicitly selected; adapt its path when

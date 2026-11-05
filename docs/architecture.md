@@ -40,8 +40,8 @@ states only for `tun0 -> vpnlink`; existing client sessions cannot fail over to
 
 Both overlay TUNs use MTU 1280 and OpenVPN MSS adjustment 1240. This leaves space
 for authenticated UDP over a typical 1450-byte Flannel path and for a typical
-provider WireGuard path. OpenVPN handles overlay fragmentation when necessary;
-IPv4 packets larger than the inner MTU are fragmented or receive local
+provider WireGuard path. There is no OpenVPN userspace fragmentation; the Linux IPv4 stack fragments
+packets larger than the inner MTU or returns local
 fragmentation-needed errors according to DF. Related ICMP can return through the
 client input guard. There is no IPv6 PMTU promise: IPv6 is dropped. Networks with
 smaller path MTUs require independent testing; do not silently raise the MTU.

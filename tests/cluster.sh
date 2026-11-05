@@ -1,4 +1,4 @@
 #!/bin/sh
 set -eu
-# Never inherit an unrelated context.
-KUBECONFIG=~/.kube/talos python3 "$(dirname "$0")/cluster.py" "$@"
+: "${KUBECONFIG:?Set KUBECONFIG to the dedicated test cluster explicitly}"
+KUBECONFIG="$KUBECONFIG" python3 "$(dirname "$0")/cluster.py" "$@"

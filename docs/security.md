@@ -40,9 +40,9 @@ workloads outside enrolled namespaces do not call the webhook. New ReplicaSet-ow
 Pods within enrolled namespaces also call it, so owners that predate installation
 can be resolved synchronously. Their admission fails closed if owner lookup is
 unavailable, even for an ultimately unselected Deployment. Direct unselected Pods
-do not call it. There is no namespace opt-out label that can
-silently bypass enforcement. Unknown configured client namespaces are rejected
-at Pod admission. False selection values still pass through validation when
+do not call it. The webhook registrations match only the immutable namespace name labels listed
+in `clientNamespaces`; the annotation has no effect outside that explicit scope.
+Do not treat an annotation alone as proof of protection. False selection values still pass through validation when
 explicitly present.
 
 Template annotations override Deployment metadata; direct Pod annotations override
