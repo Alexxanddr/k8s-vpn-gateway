@@ -35,8 +35,9 @@ flowchart LR
 
 A restartable init sidecar installs nftables rules **before any application init
 container starts**. The rules outlive the sidecar process and allow ordinary
-interface egress only for the authenticated tunnel transport and the trusted
-resolver's cluster DNS queries. No code restores direct Internet access. A
+interface egress for the authenticated tunnel transport, the trusted resolver's
+cluster DNS queries and replies to admitted cluster ingress when configured.
+Application-initiated Internet traffic always requires the VPN. A
 separate gateway firewall restricts forwarded client packets to `tun0`, even
 while Gluetun starts or reconnects. IPv6 is blocked on clients.
 
@@ -132,8 +133,16 @@ securityContext:
 The application cannot use root, added capabilities (including `NET_RAW` and
 `NET_ADMIN`), privileged mode, shared/host namespaces, user namespaces, hostPath,
 CSI or raw device volumes, host ports, unmasked proc, custom RuntimeClasses,
-resource claims or alternate CNI attachments. Use **exec probes**;
-ordinary inbound connections and replies are blocked in this initial version.
+resource claims or alternate CNI attachments. Admission supplies absent
+container settings to drop all capabilities and disable privilege escalation.
+A fixed non-root UID still needs to be set on the container or Pod.
+
+To preserve cluster Service access and HTTP, TCP or gRPC probes, set
+`clusterIngressCIDRs` to the cluster's IPv4 Pod CIDRs at installation. The
+guard also accepts probes from the Pod's own node. It opens only declared TCP
+container ports. Network probes must target a declared port on the Pod.
+Without this setting, use exec probes. The setting is shared by the gateway
+installation, so applications still use only the opt-in annotation.
 Ephemeral debug containers must obey the same rules. Existing Deployments are not
 restarted by installing or upgrading this project.
 

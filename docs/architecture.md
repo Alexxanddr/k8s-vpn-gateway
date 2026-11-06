@@ -78,11 +78,16 @@ connections use the same VPN-only routing as every other external socket.
 
 ## Internal traffic, ingress and probes
 
-There are no generic pod, service, node, RFC1918 or Kubernetes API bypasses. Only
-the transport and resolver exceptions above exist. IPv4 loopback and VPN traffic
-are allowed; IPv6 is dropped even on loopback. The gateway rejects overlay access
-to its own services and does not enable OpenVPN client-to-client forwarding.
-Ordinary application ingress and responses are blocked, avoiding asymmetric
-routing and a broad established-connection bypass. Use exec health probes and
-run this version only for egress-oriented workloads. HTTP/TCP/gRPC application
-probes are rejected. Local UNIX sockets continue to work normally.
+IPv4 loopback and VPN traffic are allowed. IPv6 is dropped even on loopback.
+The gateway rejects overlay access to its own services and does not enable
+OpenVPN client-to-client forwarding. Local UNIX sockets continue to work normally.
+
+When `clusterIngressCIDRs` is set, the guard accepts incoming IPv4 TCP SYNs on
+declared container ports from the configured Pod CIDRs and the local kubelet's
+node IP. It marks these connections and uses the original CNI next hop for
+their replies. The underlay output rule requires the mark and the reply
+direction, so an app cannot use it to initiate a cluster or Internet connection.
+Network probes must target a declared TCP port on the Pod. Without configured
+CIDRs, cluster ingress stays blocked and only exec probes are accepted.
+The CNI must provide a single IPv4 default route on `eth0` when ingress is enabled.
+Use cluster NetworkPolicies for narrower ingress authorization where supported.

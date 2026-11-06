@@ -10,6 +10,7 @@ import (
 	core "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 var config = Config{Image: "vpn:test", GatewayIP: "10.96.0.2", ClusterDNS: "10.96.0.10", PublicDNS: "1.1.1.1", ClientSecret: "transport", Namespaces: []string{"test"}}
@@ -205,5 +206,64 @@ func TestAutomaticEnrollmentUsesPodNamespace(t *testing.T) {
 	r.Namespace = "app-one"
 	if changes, err := c.Mutate(r); err != nil || len(changes) != 0 {
 		t.Fatalf("unselected Pod changed: %v %v", changes, err)
+	}
+}
+
+func TestAnnotationOnlyServicePod(t *testing.T) {
+	ingress := config
+	ingress.ClusterIngressCIDRs = "10.244.0.0/16"
+	p := safePod()
+	p.Spec.SecurityContext = &core.PodSecurityContext{RunAsUser: ptr(int64(1000))}
+	app := &p.Spec.Containers[0]
+	app.SecurityContext = nil
+	app.Ports = []core.ContainerPort{{Name: "http", ContainerPort: 8000}}
+	probe := &core.HTTPGetAction{Path: "/health", Port: intstr.FromString("http")}
+	app.ReadinessProbe = &core.Probe{ProbeHandler: core.ProbeHandler{HTTPGet: probe}}
+
+	changes, err := ingress.Mutate(request("Pod", p))
+	if err != nil || len(changes) == 0 || changes[0].Path != "/spec/containers/0/securityContext" {
+		t.Fatalf("container hardening was not added: %v %#v", err, changes)
+	}
+	sc := changes[0].Value.(*core.SecurityContext)
+	if *sc.AllowPrivilegeEscalation || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
+		t.Fatalf("unexpected hardening: %#v", sc)
+	}
+	for _, change := range changes {
+		if change.Path == "/spec/initContainers" {
+			guard := change.Value.([]core.Container)[0]
+			if guard.Env[3].Value != "10.244.0.0/16" || guard.Env[4].Value != "8000" {
+				t.Fatalf("wrong ingress rules: %#v", guard.Env)
+			}
+		}
+	}
+
+	if _, err := config.Mutate(request("Pod", p)); err == nil {
+		t.Fatal("allowed a network probe without cluster ingress")
+	}
+	probe.Host = "example.com"
+	if _, err := ingress.Mutate(request("Pod", p)); err == nil {
+		t.Fatal("allowed a kubelet probe to a different host")
+	}
+	probe.Host = ""
+	probe.Port = intstr.FromInt(9000)
+	if _, err := ingress.Mutate(request("Pod", p)); err == nil {
+		t.Fatal("allowed a probe on an undeclared port")
+	}
+}
+
+func TestInstalledGuardSurvivesAdmissionUpgrade(t *testing.T) {
+	p := inject(t, safePod())
+	upgraded := config
+	upgraded.Image = "vpn:updated"
+	update := request("Pod", p)
+	update.Operation = av1.Update
+	update.OldObject = update.Object
+	if _, err := upgraded.Mutate(update); err != nil {
+		t.Fatal(err)
+	}
+	p.Spec.InitContainers[0].Image = "vpn:untrusted"
+	update.Object = request("Pod", p).Object
+	if _, err := upgraded.Mutate(update); err == nil {
+		t.Fatal("allowed existing guard image to change")
 	}
 }

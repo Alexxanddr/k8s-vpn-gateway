@@ -16,7 +16,11 @@ ordinary traffic remains blocked even if routes vanish. Native sidecars terminat
 after application containers during normal shutdown.
 
 The client drops IPv6 and allows ordinary IPv4 output only from UID 0 for the
-transport endpoint/port and for the split resolver's DNS endpoint/port. Applications
+transport endpoint/port and for the split resolver's DNS endpoint/port.
+With optional cluster ingress, the guard also permits TCP replies on connections
+whose initial SYN arrived from a configured Pod CIDR or the local node on a
+declared application port. The app cannot set the conntrack mark or use this
+rule to open new underlay connections. Applications
 must have a fixed nonzero UID, drop ALL capabilities, and disable privilege
 escalation. They cannot use root-owned socket exceptions, alter routes/firewalls,
 create raw packets, enter the network sidecar's process namespace, or mount its

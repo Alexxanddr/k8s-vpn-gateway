@@ -16,7 +16,7 @@ func TestSplitDNS(t *testing.T) {
 	}
 }
 func TestKillSwitchHasNoStateBypass(t *testing.T) {
-	rules := ClientRules("10.96.0.2", "10.96.0.10")
+	rules := ClientRules("10.96.0.2", "10.96.0.10", nil, "")
 	output := strings.Split(rules, "add chain inet vpn_guard forward")[0]
 	if strings.Contains(output, "established") || !strings.Contains(output, "meta nfproto ipv6 counter drop") || !strings.Contains(output, "meta skuid 0") {
 		t.Fatal(output)
@@ -75,6 +75,19 @@ func TestDNSRelaySplitAndTCPFallback(t *testing.T) {
 		}
 		if got := m.Answer[0].(*dns.A).A.String(); got != want {
 			t.Fatalf("%s: %s", name, got)
+		}
+	}
+}
+
+func TestIngressRepliesAreScopedToMarkedConnections(t *testing.T) {
+	rules := ClientRules("10.96.0.2", "10.96.0.10", []string{"10.244.0.0/16"}, "8000")
+	for _, rule := range []string{
+		`input iifname "eth0" ip saddr 10.244.0.0/16 tcp dport { 8000 } ct direction original ct state new tcp flags & (fin | syn | rst | ack) == syn ct mark set 0x56504e counter accept`,
+		`output oifname "eth0" meta l4proto tcp ct direction reply ct mark 0x56504e counter accept`,
+		`output ct direction reply ct mark 0x56504e counter drop`,
+	} {
+		if !strings.Contains(rules, rule) {
+			t.Fatalf("missing scoped rule %s", rule)
 		}
 	}
 }

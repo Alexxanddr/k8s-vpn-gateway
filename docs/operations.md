@@ -36,11 +36,12 @@ KUBECONFIG="$KUBECONFIG" kubectl -n vpn-apps exec POD -c vpn-guard -- ip route
 OpenVPN status contains virtual clients and byte counts, never private keys.
 nftables counters distinguish tunnel traffic, explicit exceptions, IPv6 drops
 and other blocked output/forwarding. They reset on guard reinstallation. Gluetun
-readiness reflects its own VPN health. A healthy application exec probe alone is
+readiness reflects its own VPN health. A healthy application probe alone is
 not proof of VPN availability; inspect Gluetun and the actual egress IP as well.
 
 - Pod admission error: check exact string annotation values, per-container UID,
-  capabilities and exec-only probes. No application container may use the reserved
+  capabilities and probe destinations. Network probes need cluster ingress enabled
+  and a declared TCP port on the Pod. No application container may use the reserved
   guard name, mount, or annotation.
 - Stuck at startup: inspect `vpn-guard`, transport Secret availability, and namespace
   PSA events. A missing Secret or failed firewall installation is intentionally fatal.

@@ -12,3 +12,7 @@ publicDNS: 1.1.1.1
 # Optional scheduling constraints, useful for the multi-node acceptance test.
 gatewayNodeSelector: {}
 controllerNodeSelector: {}
+
+# IPv4 Pod CIDRs allowed to initiate TCP to declared application ports.
+# When enabled, the Pod's own kubelet can also run network probes.
+clusterIngressCIDRs: []

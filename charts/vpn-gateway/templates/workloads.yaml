@@ -24,6 +24,7 @@ spec:
           args: [admission]
           env:
             - {name: CLIENT_IMAGE, value: {{ .Values.image | quote }}}
+            - {name: CLUSTER_INGRESS_CIDRS, value: {{ join "," .Values.clusterIngressCIDRs | quote }}}
             - {name: CLUSTER_DNS, value: {{ .Values.clusterDNS | quote }}}
             - {name: PUBLIC_DNS, value: {{ .Values.publicDNS | quote }}}
             - {name: CLIENT_SECRET, value: {{ .Values.clientSecret | quote }}}

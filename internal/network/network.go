@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -64,14 +65,27 @@ func ipv4(name string) (string, error) {
 	return a.String(), nil
 }
 
-// There is deliberately no established/related OUTPUT bypass on the client.
-func ClientRules(gateway, clusterDNS string) string {
+// Only the reply direction of explicitly accepted inbound TCP connections may
+// use the underlay. Locally initiated connections cannot acquire this mark.
+const ingressMark = "0x56504e"
+
+func ClientRules(gateway, clusterDNS string, sources []string, ports string) string {
+	var input, output strings.Builder
+	if len(sources) > 0 {
+		for _, source := range sources {
+			fmt.Fprintf(&input, `add rule inet vpn_guard input iifname "eth0" ip saddr %s tcp dport { %s } ct direction original ct state new tcp flags & (fin | syn | rst | ack) == syn ct mark set %s counter accept
+`, source, ports, ingressMark)
+		}
+		fmt.Fprintf(&output, `add rule inet vpn_guard output oifname "eth0" meta l4proto tcp ct direction reply ct mark %s counter accept
+add rule inet vpn_guard output ct direction reply ct mark %s counter drop
+`, ingressMark, ingressMark)
+	}
 	return fmt.Sprintf(`add table inet vpn_guard
 flush table inet vpn_guard
 add chain inet vpn_guard output { type filter hook output priority 10; policy drop; }
 add rule inet vpn_guard output meta nfproto ipv6 counter drop
 add rule inet vpn_guard output oifname "lo" counter accept
-add rule inet vpn_guard output oifname "vpnlink" counter accept
+%sadd rule inet vpn_guard output oifname "vpnlink" counter accept
 add rule inet vpn_guard output oifname "eth0" meta skuid 0 ip daddr %s udp dport 1194 counter accept
 add rule inet vpn_guard output oifname "eth0" meta skuid 0 ip daddr %s udp dport 53 counter accept
 add rule inet vpn_guard output oifname "eth0" meta skuid 0 ip daddr %s tcp dport 53 counter accept
@@ -82,7 +96,7 @@ add rule inet vpn_guard input meta nfproto ipv6 counter drop
 add rule inet vpn_guard input iifname "lo" accept
 add rule inet vpn_guard input iifname "vpnlink" accept
 add rule inet vpn_guard input ct state established,related accept
-`, gateway, clusterDNS, clusterDNS)
+%s`, output.String(), gateway, clusterDNS, clusterDNS, input.String())
 }
 
 func GatewayRules() string {
@@ -202,6 +216,66 @@ func DNSHandler(cluster, public string) dns.Handler {
 	})
 }
 
+func clusterIngress() ([]string, string, error) {
+	cidrs, ports := os.Getenv("INGRESS_CIDRS"), os.Getenv("INGRESS_PORTS")
+	if cidrs == "" && ports == "" {
+		return nil, "", nil
+	}
+	node, err := ipv4("NODE_IP")
+	if err != nil {
+		return nil, "", err
+	}
+	var sources []string
+	for _, value := range append(strings.Split(cidrs, ","), node+"/32") {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil || !prefix.Addr().Is4() || prefix.Bits() == 0 || prefix != prefix.Masked() {
+			return nil, "", fmt.Errorf("invalid cluster ingress CIDR")
+		}
+		sources = append(sources, prefix.String())
+	}
+	var numbers []string
+	for _, value := range strings.Split(ports, ",") {
+		port, err := strconv.ParseUint(value, 10, 16)
+		if err != nil || port == 0 {
+			return nil, "", fmt.Errorf("invalid cluster ingress port")
+		}
+		numbers = append(numbers, strconv.FormatUint(port, 10))
+	}
+	return sources, strings.Join(numbers, ", "), nil
+}
+
+// Use the CNI's IPv4 default next hop for these destinations even after
+// OpenVPN installs its more specific default routes. nftables still controls
+// which packets may actually leave eth0.
+func ingressRoutes(sources []string) error {
+	b, err := exec.Command("ip", "-j", "-4", "route", "show", "default", "dev", "eth0").Output()
+	if err != nil {
+		return err
+	}
+	var routes []struct {
+		Gateway string `json:"gateway"`
+	}
+	if err := json.Unmarshal(b, &routes); err != nil || len(routes) != 1 {
+		return fmt.Errorf("cluster ingress requires a single IPv4 CNI default route")
+	}
+	const table, priority = "242", "100"
+	args := []string{"-4", "route", "replace", "table", table, "default", "dev", "eth0"}
+	if routes[0].Gateway != "" {
+		args = append(args, "via", routes[0].Gateway, "onlink")
+	}
+	if err := run("ip", args...); err != nil {
+		return err
+	}
+	for _, source := range sources {
+		rule := []string{"pref", priority, "to", source, "lookup", table}
+		_ = run("ip", append([]string{"-4", "rule", "del"}, rule...)...)
+		if err := run("ip", append([]string{"-4", "rule", "add"}, rule...)...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func Client() error {
 	// Remove stale startup state before any potentially failing operation.
 	_ = os.Remove("/run/vpn/ready")
@@ -220,11 +294,20 @@ func Client() error {
 	if err != nil {
 		return err
 	}
-	if err := nft(ClientRules(gateway, cluster)); err != nil {
+	sources, ports, err := clusterIngress()
+	if err != nil {
+		return err
+	}
+	if err := nft(ClientRules(gateway, cluster, sources, ports)); err != nil {
 		return err
 	}
 	for _, ip := range []string{gateway, cluster} {
 		if err := localRoute(ip); err != nil {
+			return err
+		}
+	}
+	if len(sources) > 0 {
+		if err := ingressRoutes(sources); err != nil {
 			return err
 		}
 	}

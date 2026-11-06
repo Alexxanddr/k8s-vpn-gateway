@@ -11,6 +11,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	core "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 const Annotation = "pass-to-vpn"
@@ -31,6 +33,7 @@ type Config struct {
 	Namespaces                                            []string
 	AutoEnroll                                            bool
 	GatewayNamespace                                      string
+	ClusterIngressCIDRs                                   string
 }
 
 type object struct {
@@ -67,13 +70,21 @@ func selected(m map[string]string) (bool, error) {
 	return v == "true", err
 }
 
-func (c Config) sidecar() core.Container {
+func (c Config) sidecar(ports []string) core.Container {
 	yes, no, uid := true, false, int64(0)
 	always := core.ContainerRestartPolicyAlways
+	env := []core.EnvVar{{Name: "GATEWAY_IP", Value: c.GatewayIP}, {Name: "CLUSTER_DNS", Value: c.ClusterDNS}, {Name: "PUBLIC_DNS", Value: c.PublicDNS}}
+	if len(ports) > 0 {
+		env = append(env,
+			core.EnvVar{Name: "INGRESS_CIDRS", Value: c.ClusterIngressCIDRs},
+			core.EnvVar{Name: "INGRESS_PORTS", Value: strings.Join(ports, ",")},
+			core.EnvVar{Name: "NODE_IP", ValueFrom: &core.EnvVarSource{FieldRef: &core.ObjectFieldSelector{APIVersion: "v1", FieldPath: "status.hostIP"}}},
+		)
+	}
 	return core.Container{
 		Name: "vpn-guard", Image: c.Image, ImagePullPolicy: core.PullIfNotPresent,
 		Args: []string{"client"}, RestartPolicy: &always,
-		Env: []core.EnvVar{{Name: "GATEWAY_IP", Value: c.GatewayIP}, {Name: "CLUSTER_DNS", Value: c.ClusterDNS}, {Name: "PUBLIC_DNS", Value: c.PublicDNS}},
+		Env: env,
 		SecurityContext: &core.SecurityContext{RunAsUser: &uid, RunAsNonRoot: &no, AllowPrivilegeEscalation: &no, ReadOnlyRootFilesystem: &yes,
 			Capabilities:   &core.Capabilities{Drop: []core.Capability{"ALL"}, Add: []core.Capability{"NET_ADMIN", "NET_BIND_SERVICE"}},
 			SeccompProfile: &core.SeccompProfile{Type: core.SeccompProfileTypeRuntimeDefault}},
@@ -91,7 +102,55 @@ func (c Config) volumes() []core.Volume {
 		{Name: "vpn-run", VolumeSource: core.VolumeSource{EmptyDir: &core.EmptyDirVolumeSource{Medium: core.StorageMediumMemory}}},
 	}
 }
-func appSecurity(s core.PodSpec, containers []core.Container) error {
+
+// Fill only absent hardening settings. Explicit insecure settings still fail validation.
+func secureContainers(containers []core.Container, field string) []patch {
+	var changes []patch
+	for i := range containers {
+		sc := containers[i].SecurityContext.DeepCopy()
+		if sc == nil {
+			sc = &core.SecurityContext{}
+		}
+		if sc.AllowPrivilegeEscalation != nil && sc.Capabilities != nil {
+			continue
+		}
+		if sc.AllowPrivilegeEscalation == nil {
+			sc.AllowPrivilegeEscalation = ptr(false)
+		}
+		if sc.Capabilities == nil {
+			sc.Capabilities = &core.Capabilities{Drop: []core.Capability{"ALL"}}
+		}
+		containers[i].SecurityContext = sc
+		changes = append(changes, patch{"add", fmt.Sprintf("/spec/%s/%d/securityContext", field, i), sc})
+	}
+	return changes
+}
+
+func tcpPort(p core.ContainerPort) bool {
+	return p.Protocol == "" || p.Protocol == core.ProtocolTCP
+}
+
+func declaredProbePort(container core.Container, probe *core.Probe) bool {
+	var port intstr.IntOrString
+	switch {
+	case probe.HTTPGet != nil && probe.HTTPGet.Host == "":
+		port = probe.HTTPGet.Port
+	case probe.TCPSocket != nil && probe.TCPSocket.Host == "":
+		port = probe.TCPSocket.Port
+	case probe.GRPC != nil:
+		port = intstr.FromInt32(probe.GRPC.Port)
+	default:
+		return false
+	}
+	for _, p := range container.Ports {
+		if tcpPort(p) && (port.Type == intstr.Int && port.IntVal == p.ContainerPort || port.Type == intstr.String && port.StrVal == p.Name && p.Name != "") {
+			return true
+		}
+	}
+	return false
+}
+
+func appSecurity(s core.PodSpec, containers []core.Container, ingress bool) error {
 	for _, c := range containers {
 		sc := c.SecurityContext
 		if sc == nil {
@@ -119,8 +178,8 @@ func appSecurity(s core.PodSpec, containers []core.Container) error {
 			}
 		}
 		for _, probe := range []*core.Probe{c.StartupProbe, c.ReadinessProbe, c.LivenessProbe} {
-			if probe != nil && probe.Exec == nil {
-				return fmt.Errorf("%s: protected applications require exec probes", c.Name)
+			if probe != nil && probe.Exec == nil && (!ingress || !declaredProbePort(c, probe)) {
+				return fmt.Errorf("%s: use exec probes or probe a declared TCP port on the Pod with cluster ingress enabled", c.Name)
 			}
 		}
 		for _, p := range c.Ports {
@@ -136,7 +195,7 @@ func appSecurity(s core.PodSpec, containers []core.Container) error {
 	}
 	return nil
 }
-func validate(s core.PodSpec, annotations map[string]string) error {
+func (c Config) validate(s core.PodSpec, annotations map[string]string) error {
 	for _, key := range []string{"k8s.v1.cni.cncf.io/networks", "v1.multus-cni.io/default-network"} {
 		if _, present := annotations[key]; present {
 			return fmt.Errorf("alternate CNI attachments forbidden")
@@ -174,7 +233,23 @@ func validate(s core.PodSpec, annotations map[string]string) error {
 			return fmt.Errorf("reserved container name")
 		}
 	}
-	return appSecurity(s, all)
+	return appSecurity(s, all, c.ClusterIngressCIDRs != "")
+}
+
+func (c Config) ingressPorts(s core.PodSpec) []string {
+	var ports []string
+	if c.ClusterIngressCIDRs == "" {
+		return ports
+	}
+	for _, container := range slices.Concat(s.Containers, s.InitContainers) {
+		for _, p := range container.Ports {
+			if tcpPort(p) {
+				ports = append(ports, strconv.Itoa(int(p.ContainerPort)))
+			}
+		}
+	}
+	slices.Sort(ports)
+	return slices.Compact(ports)
 }
 
 func (c Config) dns(namespace string) *core.PodDNSConfig {
@@ -214,7 +289,10 @@ func (c Config) Mutate(r *av1.AdmissionRequest) ([]patch, error) {
 			if c.AutoEnroll && !c.autoNamespace(r.Namespace) && !slices.Contains(c.Namespaces, r.Namespace) {
 				return nil, fmt.Errorf("VPN enrollment is unavailable in this namespace")
 			}
-			if err := validate(o.Spec.Template.Spec, t); err != nil {
+			spec := o.Spec.Template.Spec
+			secureContainers(spec.Containers, "containers")
+			secureContainers(spec.InitContainers, "initContainers")
+			if err := c.validate(spec, t); err != nil {
 				return nil, err
 			}
 		}
@@ -284,27 +362,42 @@ func (c Config) Mutate(r *av1.AdmissionRequest) ([]patch, error) {
 			return nil, fmt.Errorf("automatic enrollment label is missing")
 		}
 		// Compare trusted fields rather than trusting the annotation as proof of injection.
-		if a[Injected] != "v1" || !sameContainer(s.InitContainers[0], c.sidecar()) || len(s.Volumes) < 3 || !reflect.DeepEqual(s.Volumes[len(s.Volumes)-3:], c.volumes()) || s.DNSPolicy != core.DNSNone || !reflect.DeepEqual(s.DNSConfig, c.dns(r.Namespace)) {
+		guard := s.InitContainers[0]
+		s.InitContainers = s.InitContainers[1:]
+		expected := c.sidecar(c.ingressPorts(s))
+		if r.Operation == av1.Update {
+			// An installed guard is immutable across chart upgrades. Check the
+			// old guard for drift without requiring it to use today's image.
+			var old object
+			if err := json.Unmarshal(r.OldObject.Raw, &old); err != nil {
+				return nil, err
+			}
+			if old.Metadata.Annotations[Injected] == "v1" && len(old.Spec.InitContainers) > 0 {
+				expected = old.Spec.InitContainers[0]
+			}
+		}
+		if a[Injected] != "v1" || !sameContainer(guard, expected) || len(s.Volumes) < 3 || !reflect.DeepEqual(s.Volumes[len(s.Volumes)-3:], c.volumes()) || s.DNSPolicy != core.DNSNone || !reflect.DeepEqual(s.DNSConfig, c.dns(r.Namespace)) {
 			return nil, fmt.Errorf("injected protection was modified")
 		}
-		s.InitContainers = s.InitContainers[1:]
 		s.Volumes = s.Volumes[:len(s.Volumes)-3]
-		return nil, validate(s, a)
+		return nil, c.validate(s, a)
 	}
 	if r.Operation != av1.Create || a[Injected] != "" {
 		return nil, fmt.Errorf("missing protection; create a new Pod through admission")
 	}
-	if err := validate(s, a); err != nil {
+	changes := secureContainers(s.Containers, "containers")
+	secureContainers(s.InitContainers, "initContainers")
+	if err := c.validate(s, a); err != nil {
 		return nil, err
 	}
 	a[Injected] = "v1"
-	changes := []patch{
-		{"add", "/metadata/annotations", a},
-		{"add", "/spec/initContainers", append([]core.Container{c.sidecar()}, s.InitContainers...)},
-		{"add", "/spec/volumes", append(s.Volumes, c.volumes()...)},
-		{"add", "/spec/dnsPolicy", core.DNSNone},
-		{"add", "/spec/dnsConfig", c.dns(r.Namespace)},
-	}
+	changes = append(changes,
+		patch{"add", "/metadata/annotations", a},
+		patch{"add", "/spec/initContainers", append([]core.Container{c.sidecar(c.ingressPorts(s))}, s.InitContainers...)},
+		patch{"add", "/spec/volumes", append(s.Volumes, c.volumes()...)},
+		patch{"add", "/spec/dnsPolicy", core.DNSNone},
+		patch{"add", "/spec/dnsConfig", c.dns(r.Namespace)},
+	)
 	if c.autoNamespace(r.Namespace) {
 		labels := o.Metadata.Labels
 		if labels == nil {
@@ -318,15 +411,18 @@ func (c Config) Mutate(r *av1.AdmissionRequest) ([]patch, error) {
 
 // Kubernetes defaults these fields between mutation and validation/reinvocation.
 func sameContainer(actual, expected core.Container) bool {
-	actual.TerminationMessagePath = ""
-	actual.TerminationMessagePolicy = ""
-	if actual.StartupProbe != nil {
-		p := actual.StartupProbe.DeepCopy()
-		p.TimeoutSeconds = 0
-		p.SuccessThreshold = 0
-		actual.StartupProbe = p
+	normalize := func(container core.Container) core.Container {
+		container.TerminationMessagePath = ""
+		container.TerminationMessagePolicy = ""
+		if container.StartupProbe != nil {
+			probe := container.StartupProbe.DeepCopy()
+			probe.TimeoutSeconds = 0
+			probe.SuccessThreshold = 0
+			container.StartupProbe = probe
+		}
+		return container
 	}
-	return reflect.DeepEqual(actual, expected)
+	return reflect.DeepEqual(normalize(actual), normalize(expected))
 }
 
 func (c Config) Handler(w http.ResponseWriter, r *http.Request) {
@@ -359,7 +455,7 @@ func serviceIP(namespace, name string) (string, error) {
 }
 
 func Serve() error {
-	c := Config{Image: os.Getenv("CLIENT_IMAGE"), ClusterDNS: os.Getenv("CLUSTER_DNS"), PublicDNS: os.Getenv("PUBLIC_DNS"), ClientSecret: os.Getenv("CLIENT_SECRET"), Namespaces: strings.Split(os.Getenv("CLIENT_NAMESPACES"), ","), OwnerSelection: ownerSelection, AutoEnroll: os.Getenv("AUTO_ENROLL") == "true", GatewayNamespace: os.Getenv("POD_NAMESPACE")}
+	c := Config{Image: os.Getenv("CLIENT_IMAGE"), ClusterDNS: os.Getenv("CLUSTER_DNS"), PublicDNS: os.Getenv("PUBLIC_DNS"), ClientSecret: os.Getenv("CLIENT_SECRET"), Namespaces: strings.Split(os.Getenv("CLIENT_NAMESPACES"), ","), OwnerSelection: ownerSelection, AutoEnroll: os.Getenv("AUTO_ENROLL") == "true", GatewayNamespace: os.Getenv("POD_NAMESPACE"), ClusterIngressCIDRs: os.Getenv("CLUSTER_INGRESS_CIDRS")}
 	var err error
 	c.GatewayIP, err = serviceIP(os.Getenv("POD_NAMESPACE"), "vpn-gateway")
 	if err != nil {
@@ -369,6 +465,14 @@ func Serve() error {
 		a, err := netip.ParseAddr(ip)
 		if err != nil || !a.Is4() {
 			return fmt.Errorf("IPv4 configuration required")
+		}
+	}
+	if c.ClusterIngressCIDRs != "" {
+		for _, value := range strings.Split(c.ClusterIngressCIDRs, ",") {
+			prefix, err := netip.ParsePrefix(value)
+			if err != nil || !prefix.Addr().Is4() || prefix.Bits() == 0 || prefix != prefix.Masked() {
+				return fmt.Errorf("clusterIngressCIDRs must contain canonical IPv4 CIDRs with a nonzero prefix length")
+			}
 		}
 	}
 	go c.syncCertificates()
